@@ -1,0 +1,85 @@
+<!-- Required Notice: Copyright (c) 2026 Omair Kamil
+     See LICENSE file in root directory for license terms. -->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cypress Display Mirror</title>
+    <style>
+        body {
+            background-color: #000000;
+            color: #FF0000;
+            font-family: 'Roboto', sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            padding-top: 2rem;
+            height: 100vh;
+            margin: 0;
+        }
+
+        .display-container {
+            border: 4px solid #333;
+            border-radius: 8px;
+            padding: 4px;
+            background-color: #121212;
+            box-shadow: 0 0 20px rgba(255, 0, 0, 0.1);
+        }
+
+        canvas {
+            display: block;
+            image-rendering: pixelated;
+            /* Scale the image to make it easier to see */
+            width: 256px;
+            height: 256px;
+        }
+    </style>
+</head>
+<body>
+    <div class="display-container">
+        <canvas id="screen" width="256" height="256"></canvas>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('screen');
+        const ctx = canvas.getContext('2d');
+        const imageData = ctx.createImageData(256, 256);
+        const data = imageData.data;
+
+        async function fetchFrame() {
+            try {
+                const res = await fetch('/api/frame');
+                if (!res.ok) throw new Error("Failed to fetch frame");
+                
+                const buffer = await res.arrayBuffer();
+                const view = new DataView(buffer);
+                
+                let p = 0; // Pixel index for RGBA (4 bytes per pixel)
+                for (let i = 0; i < buffer.byteLength; i += 2) {
+                    const rgb565 = view.getUint16(i, true); 
+
+                    // Convert RGB565 to RGB888
+                    const r5 = (rgb565 >> 11) & 0x1F;
+                    const g6 = (rgb565 >> 5) & 0x3F;
+                    const b5 = rgb565 & 0x1F;
+
+                    data[p++] = (r5 * 255) / 31;
+                    data[p++] = (g6 * 255) / 63;
+                    data[p++] = (b5 * 255) / 31;
+                    data[p++] = 255; // Alpha
+                }
+
+                ctx.putImageData(imageData, 0, 0);
+            } catch (err) {
+                // Ignore transient errors
+            }
+            // Request next frame
+            setTimeout(fetchFrame, 50);
+        }
+
+        fetchFrame();
+    </script>
+</body>
+</html>
