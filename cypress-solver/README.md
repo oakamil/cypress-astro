@@ -1,4 +1,4 @@
-# cedar-solver
+# cypress-solver
 
 Integration of the fast `tetra-solve-rs` algorithms for the [Cedar™](https://github.com/smroid/cedar-server) telescope control system.
 
@@ -14,7 +14,7 @@ This crate is part of the broader `cypress-astro` workspace.
 
 ### Building
 
-To build the package, run the following from within the `cedar-solver` directory or the workspace root:
+To build the package, run the following from within the `cypress-solver` directory or the workspace root:
 
 ```bash
 cargo build --release
@@ -55,12 +55,12 @@ See the root `LICENSE.md` file for full details.
 
 ### Third-Party Licenses
 
-While cedar-solver itself is licensed under the Apache License 2.0, it integrates with and depends on several external projects (including but not limited to `cedar-server` and `tetra3_server`). Each of these third-party projects is governed by its own respective licensing terms. Users are responsible for reviewing and complying with the individual licenses of any integrated components, tools, or dependencies.
+While cypress-solver itself is licensed under the Apache License 2.0, it integrates with and depends on several external projects (including but not limited to `cedar-server` and `tetra3_server`). Each of these third-party projects is governed by its own respective licensing terms. Users are responsible for reviewing and complying with the individual licenses of any integrated components, tools, or dependencies.
 
 ## Disclaimer
 
 All product names, trademarks, and registered trademarks are the property of their respective owners. All company, product, and service names used in this repository are for identification purposes only. Use of these names, trademarks, and brands does not imply endorsement.
 
-`cypress-astro` and `cedar-solver` are not affiliated with, endorsed by, or sponsored by Clear Skies Astro.
+`cypress-astro` and `cypress-solver` are not affiliated with, endorsed by, or sponsored by Clear Skies Astro.
 
 Cedar™ is a trademark of Clear Skies Astro, registered in the U.S. and other countries.

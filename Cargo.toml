@@ -1,6 +1,7 @@
 [workspace]
 members = [
-    "cedar-solver",
+    "cypress-display",
+    "cypress-solver",
 ]
 resolver = "2"
 
