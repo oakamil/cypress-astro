@@ -1,0 +1,16 @@
+[package]
+name = "cypress-server"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "cypress-server"
+path = "src/main.rs"
+
+[dependencies]
+cypress-solver = { path = "../cypress-solver" }
+cedar-elements = { path = "../../cedar-server/elements" }
+cedar-server = { path = "../../cedar-server/server" }
+pico-args = "0.5.0"
+tokio = { version = "1.0", features = ["rt-multi-thread", "sync"] }
+tetra3 = { git = "https://github.com/oakamil/tetra-solve-rs.git" }

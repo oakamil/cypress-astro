@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "cypress-display",
+    "cypress-server",
     "cypress-solver",
 ]
 resolver = "2"
