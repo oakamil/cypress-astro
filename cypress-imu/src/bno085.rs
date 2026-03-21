@@ -11,11 +11,18 @@ use cedar_elements::imu_trait::{
     AccelData, GyroData, HorizonCoordinates, ImuState, ImuTrait, TrackerState,
     TransformCalibration, ZeroBias,
 };
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
 use nalgebra::{Matrix3, Rotation3, UnitQuaternion, Vector3};
 use tokio::sync::{RwLock, watch};
 
 const CALIBRATION_FILE: &str = "imu_calibration.txt";
+
+// Helper to strictly enforce saving to the program's launch directory
+fn get_calibration_file_path() -> std::path::PathBuf {
+    std::env::current_dir()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."))
+        .join(CALIBRATION_FILE)
+}
 
 #[derive(Clone, Copy, Debug)]
 struct ImuUpdate {
@@ -40,6 +47,10 @@ struct AlignmentState {
     transform_calibration: Option<TransformCalibration>,
     // Store distinct rotational axes to continuously refine the 3D calibration via SVD
     calibration_axes: Vec<(Vector3<f64>, Vector3<f64>)>,
+    // Flag to track if the current mount_q was loaded from disk, to arm the safety tripwire
+    loaded_from_disk: bool,
+    // Counter to throttle SD card writes
+    calibration_updates_since_save: usize,
 }
 
 impl Default for AlignmentState {
@@ -50,6 +61,8 @@ impl Default for AlignmentState {
             mount_q: UnitQuaternion::identity(),
             transform_calibration: None,
             calibration_axes: Vec::new(),
+            loaded_from_disk: false,
+            calibration_updates_since_save: 0,
         }
     }
 }
@@ -65,9 +78,10 @@ impl Bno085Imu {
         let (state_tx, state_rx) = watch::channel(None);
 
         let mut initial_alignment = AlignmentState::default();
+        let cal_path = get_calibration_file_path();
 
         // Load previous calibration
-        if let Ok(data) = std::fs::read_to_string(CALIBRATION_FILE) {
+        if let Ok(data) = std::fs::read_to_string(&cal_path) {
             let parts: Vec<&str> = data.trim().split(',').collect();
             if parts.len() == 4 {
                 if let (Ok(x), Ok(y), Ok(z), Ok(w)) = (
@@ -79,14 +93,17 @@ impl Bno085Imu {
                     // nalgebra::Quaternion::new takes (w, i, j, k) -> (w, x, y, z)
                     initial_alignment.mount_q =
                         UnitQuaternion::new_normalize(nalgebra::Quaternion::new(w, x, y, z));
+                    initial_alignment.loaded_from_disk = true; // Arm the safety tripwire
                     info!(
-                        "Successfully loaded saved calibration: {:.3}, {:.3}, {:.3}, {:.3}",
-                        x, y, z, w
+                        "Successfully loaded saved calibration from {:?}: {:.3}, {:.3}, {:.3}, {:.3}",
+                        cal_path, x, y, z, w
                     );
                 } else {
-                    info!("Could not parse calibration file. Starting fresh.");
+                    info!("Could not parse calibration file at {:?}. Starting fresh.", cal_path);
                 }
             }
+        } else {
+            info!("No calibration file found at {:?}. Starting fresh.", cal_path);
         }
 
         let alignment = Arc::new(RwLock::new(initial_alignment));
@@ -286,12 +303,16 @@ impl Bno085Imu {
     // Helper to spin up a non-blocking save
     fn save_calibration_to_disk(mount_q: UnitQuaternion<f64>) {
         tokio::spawn(async move {
+            let cal_path = get_calibration_file_path();
             // Write out simple CSV format: x,y,z,w
             let data = format!(
                 "{},{},{},{}",
                 mount_q[0], mount_q[1], mount_q[2], mount_q[3]
             );
-            let _ = tokio::fs::write(CALIBRATION_FILE, data).await;
+            match tokio::fs::write(&cal_path, data).await {
+                Ok(_) => debug!("Successfully wrote calibration back to {:?}", cal_path),
+                Err(e) => error!("Failed to write calibration to {:?}. Error: {}", cal_path, e),
+            }
         });
     }
 }
@@ -329,14 +350,22 @@ impl ImuTrait for Bno085Imu {
                     let error_quat = expected_new_true_q.inverse() * new_true_q;
                     let error_angle = error_quat.angle().to_degrees();
 
-                    if error_angle > 5.0 && !align.calibration_axes.is_empty() {
+                    // Only trigger if we explicitly loaded data from disk on boot.
+                    // If we are starting fresh, we allow high initial error while the SVD pool builds.
+                    if align.loaded_from_disk && error_angle > 5.0 && !align.calibration_axes.is_empty() {
+                        let cal_path = get_calibration_file_path();
                         info!(
-                            "Error {:.2}° > 5.0°. Camera may have moved. Wiping calibration.",
+                            "Error {:.2}° > 5.0°. Camera was likely rotated. Wiping disk calibration and starting fresh.",
                             error_angle
                         );
                         align.mount_q = UnitQuaternion::identity();
                         align.calibration_axes.clear();
-                        let _ = std::fs::remove_file(CALIBRATION_FILE);
+                        align.loaded_from_disk = false; // Never trigger again this session
+                        align.calibration_updates_since_save = 0;
+                        
+                        if let Err(e) = std::fs::remove_file(&cal_path) {
+                            debug!("Could not delete calibration file at {:?} (it may not exist): {}", cal_path, e);
+                        }
                         // Reset, treat this solve as a fresh baseline and skip the SVD step
                     } else {
                         // Continuous SVD calibration (Wahba's Problem)
@@ -398,13 +427,17 @@ impl ImuTrait for Bno085Imu {
                                             let rot3 = Rotation3::from_matrix_unchecked(r_mount);
                                             align.mount_q =
                                                 UnitQuaternion::from_rotation_matrix(&rot3);
+                                            
+                                            align.calibration_updates_since_save += 1;
                                             debug!(
-                                                "Refined 3D mount via SVD. Pool: {}",
-                                                align.calibration_axes.len()
+                                                "Refined 3D mount via SVD. Pool: {} Updates since save: {}",
+                                                align.calibration_axes.len(), align.calibration_updates_since_save
                                             );
 
-                                            // Save the successfully refined matrix to disk in the background
-                                            Self::save_calibration_to_disk(align.mount_q);
+                                            // Only write to disk every 10 updates to save SD card wear
+                                            if align.calibration_updates_since_save % 10 == 0 {
+                                                Self::save_calibration_to_disk(align.mount_q);
+                                            }
                                         } else {
                                             debug!(
                                                 "SVD generated NaNs. Keeping previous safe mount_q."
@@ -482,7 +515,13 @@ impl ImuTrait for Bno085Imu {
         align.mount_q = UnitQuaternion::identity();
         align.calibration_axes.clear();
         align.transform_calibration = None;
-        let _ = std::fs::remove_file(CALIBRATION_FILE); // Wipe disk on explicit reset
+        align.loaded_from_disk = false; // Reset the flag just in case
+        align.calibration_updates_since_save = 0;
+        
+        let cal_path = get_calibration_file_path();
+        if let Err(e) = std::fs::remove_file(&cal_path) {
+            debug!("Could not delete calibration file at {:?} on reset: {}", cal_path, e);
+        }
     }
 
     // IMU-derived estimate of camera pointing as of the given time.
