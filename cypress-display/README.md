@@ -6,6 +6,8 @@
 
 ![Cypress Demo Small](https://github.com/user-attachments/assets/1374c194-d611-47f5-b0d9-2200074225a2)
 
+This crate is part of the broader `cypress-astro` workspace.
+
 ## Hardware Requirements
 
 This software is intended to run on Linux-based embedded hardware, specifically the **Raspberry Pi**, as it utilizes hardware-specific HALs (e.g. `rppal`, `linux-embedded-hal`).
@@ -164,6 +166,6 @@ While `cypress-display` itself is licensed under the Apache License 2.0, it inte
 
 All product names, trademarks and registered trademarks are property of their respective owners. All company, product and service names used in this website are for identification purposes only. Use of these names, trademarks and brands does not imply endorsement.
 
-`cypress-display` is not affiliated with, endorsed by, or sponsored by Clear Skies Astro.
+`cypress-astro` and `cypress-display` are not affiliated with, endorsed by, or sponsored by Clear Skies Astro.
 
 Cedar™ is a trademark of Clear Skies Astro, registered in the U.S. and other countries.
