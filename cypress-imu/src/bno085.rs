@@ -1,3 +1,6 @@
+// Required Notice: Copyright (c) 2026 Omair Kamil
+// See LICENSE file in root directory for license terms.
+
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
