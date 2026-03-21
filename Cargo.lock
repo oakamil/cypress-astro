@@ -589,7 +589,7 @@ dependencies = [
 [[package]]
 name = "bno080"
 version = "0.1.3"
-source = "git+https://github.com/oakamil/bno080.git#b66b5610538ac2324be823a44a9d004e20e06dfd"
+source = "git+https://github.com/oakamil/bno080.git#5d259e2a58674503f66165b5211cbb02033da8df"
 dependencies = [
  "embedded-hal",
 ]
@@ -1132,6 +1132,7 @@ dependencies = [
  "bno080",
  "canonical-error",
  "cedar-elements 0.1.0",
+ "env_logger 0.11.9",
  "linux-embedded-hal",
  "log",
  "nalgebra 0.34.1",

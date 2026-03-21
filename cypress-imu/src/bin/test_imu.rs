@@ -6,9 +6,11 @@ use tokio::time;
 
 use cedar_elements::imu_trait::{HorizonCoordinates, ImuTrait, TrackerState};
 use cypress_imu::bno085::Bno085Imu;
+use env_logger;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    env_logger::init();
     println!("Initializing BNO085 over I2C...");
 
     let imu = Bno085Imu::start()?;
