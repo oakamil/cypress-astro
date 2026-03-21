@@ -55,7 +55,7 @@ impl SolverTrait for Tetra3Solver {
         height: usize,
         extension: &SolveExtension,
         params: &SolveParams,
-        _imu_estimate: Option<EquatorialCoordinates>,
+        imu_estimate: Option<EquatorialCoordinates>,
     ) -> Result<PlateSolution, CanonicalError> {
         let mut solver = self.inner.lock().await;
 
@@ -130,10 +130,33 @@ impl SolverTrait for Tetra3Solver {
                     ..Default::default()
                 })
             }
-            SolveStatus::NoMatch => Err(not_found_error("No matches found in database")),
-            SolveStatus::Timeout => Err(deadline_exceeded_error("Solve timed out")),
-            SolveStatus::Cancelled => Err(deadline_exceeded_error("Solve was cancelled")),
-            SolveStatus::TooFew => Err(invalid_argument_error("Too few stars detected")),
+            _ => {
+                // IMU fallback
+                if let Some(imu) = imu_estimate {
+                    Ok(PlateSolution {
+                        image_sky_coord: Some(CelestialCoord {
+                            ra: imu.ra,
+                            dec: imu.dec,
+                        }),
+                        roll: imu.north_roll_angle,
+                        fov: params.fov_estimate.map(|(fov, _)| fov).unwrap_or(0.0),
+                        solution_from_imu: true,
+                        distortion: params.distortion,
+                        ..Default::default()
+                    })
+                } else {
+                    match result.status {
+                        SolveStatus::NoMatch => {
+                            Err(not_found_error("No matches found in database"))
+                        }
+                        SolveStatus::Timeout => Err(deadline_exceeded_error("Solve timed out")),
+                        SolveStatus::Cancelled => {
+                            Err(deadline_exceeded_error("Solve was cancelled"))
+                        }
+                        _ => Err(invalid_argument_error("Too few stars detected")),
+                    }
+                }
+            }
         }
     }
 }

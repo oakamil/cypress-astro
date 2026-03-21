@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "cypress-display",
+    "cypress-imu",
     "cypress-server",
     "cypress-solver",
 ]

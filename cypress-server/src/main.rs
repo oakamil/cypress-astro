@@ -1,11 +1,12 @@
 use std::{path::Path, sync::Arc};
 
+use cypress_imu::bno085::Bno085Imu;
 use cypress_solver::Tetra3Solver;
 use pico_args::Arguments;
 use tetra3::Solver;
 use tokio::sync::Mutex;
 
-use cedar_elements::solver_trait::SolverTrait;
+use cedar_elements::{imu_trait::ImuTrait, solver_trait::SolverTrait};
 use cedar_server::cedar_server::server_main;
 
 fn main() {
@@ -23,7 +24,18 @@ fn main() {
             let solver_arc: Arc<Mutex<dyn SolverTrait + Send + Sync>> =
                 Arc::new(Mutex::new(solver));
 
-            (None, None, None, Some(solver_arc))
+            println!("Initializing BNO085 IMU over I2C...");
+            let imu: Option<Arc<Mutex<dyn ImuTrait + Send>>> = match Bno085Imu::start() {
+                Ok(imu) => {
+                    println!("IMU successfully initialized!");
+                    Some(Arc::new(Mutex::new(imu)))
+                }
+                Err(_) => {
+                    println!("Could not start BNO085 IMU");
+                    None
+                }
+            };
+            (None, None, imu, Some(solver_arc))
         },
     );
 }
