@@ -19,16 +19,16 @@ git clone https://github.com/oakamil/cypress-astro.git
 To build the cypress-server binary from the `cypress-astro` root:
 
 ```
-cargo build --release -p cypress-server
+./build.sh
 ```
 
-The binary is built into `target/release/cypress-server`.
+The binary is built into `dist/cypress-server`.
 
 ## Running
 
 Place `cypress-server` into the same location as `cedar-box-server`, typically `$HOME/cedar/bin`. `cedar-box-server` may be removed if it is already there.
 
-Ensure that the capabilities for the binary are set:
+Ensure that the capabilities for the binary are set. The build script above does this automatically, but if the binary is copied to a different system the capabilities have to be set again.
 
 ```
 caps="cap_sys_time,cap_dac_override,cap_chown,cap_fowner,cap_net_bind_service+ep"
@@ -40,6 +40,14 @@ Run the binary without activating any Python environment as there is no dependen
 ```
 cd $HOME/run
 $HOME/cedar/bin/cypress-server
+```
+
+### IMU Integration
+
+If an IMU is available `cypress-server` will utilize the IMU in 9-axis mode by default. To active 6-axis mode include the `-g` or `--use-game-rotation` option.
+
+```
+$HOME/cedar/bin/cypress-server -g
 ```
 
 ## License
@@ -56,6 +64,6 @@ While `cypress-server` itself is licensed under the Apache License 2.0, it integ
 
 All product names, trademarks and registered trademarks are property of their respective owners. All company, product and service names used in this website are for identification purposes only. Use of these names, trademarks and brands does not imply endorsement.
 
-`cypress-astro` is not affiliated with, endorsed by, or sponsored by Clear Skies Astro.
+`cypress-astro` and `cypress-server` are not affiliated with, endorsed by, or sponsored by Clear Skies Astro.
 
 Cedar™ is a trademark of Clear Skies Astro, registered in the U.S. and other countries.

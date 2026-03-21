@@ -6,7 +6,7 @@ This crate is part of the broader `cypress-astro` workspace.
 
 ## Overview
 
-The `cypress-imu` package provides an implementation of the Cedar `ImuTrait` using the BNO085 sensor. This allows the Cedar™ telescope control system to estimate positioning between camera plate-solves.
+The `cypress-imu` package provides an implementation of the Cedar™ `ImuTrait` using the BNO085 sensor. This allows the Cedar™ telescope control system to estimate positioning between camera plate-solves.
 
 `cypress-imu` supports both standard rotation vector mode (9-axis) and game rotation vector mode (6-axis - the magnetometer is disabled).
 
@@ -47,6 +47,6 @@ While `cypress-imu` itself is licensed under the Apache License 2.0, it integrat
 
 All product names, trademarks and registered trademarks are property of their respective owners. All company, product and service names used in this website are for identification purposes only. Use of these names, trademarks and brands does not imply endorsement.
 
-`cypress-astro` is not affiliated with, endorsed by, or sponsored by Clear Skies Astro.
+`cypress-astro` and `cypress-imu` are not affiliated with, endorsed by, or sponsored by Clear Skies Astro.
 
 Cedar™ is a trademark of Clear Skies Astro, registered in the U.S. and other countries.
