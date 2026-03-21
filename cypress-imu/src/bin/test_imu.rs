@@ -13,7 +13,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
     println!("Initializing BNO085 over I2C...");
 
-    let imu = Bno085Imu::start()?;
+    let imu = Bno085Imu::start(false)?;
 
     println!("Waiting for sensor fusion algorithm to converge (3 seconds)...");
 

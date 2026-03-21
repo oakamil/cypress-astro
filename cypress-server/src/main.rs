@@ -16,7 +16,9 @@ fn main() {
          See LICENSE.md at https://github.com/smroid/cedar-server",
         /*flutter_app_path=*/ "../cedar/cedar-aim/cedar_flutter/build/web",
         /*get_dependencies=*/
-        |_pargs: Arguments| {
+        |mut pargs: Arguments| {
+            let use_game_rotation = pargs.contains(["-g", "--use-game-rotation"]);
+
             let db_path = Path::new("../cedar/data/default_database.npz");
             let solver = Tetra3Solver::new(
                 Solver::load_database(db_path).expect("Failed to load Tetra3 database"),
@@ -25,16 +27,17 @@ fn main() {
                 Arc::new(Mutex::new(solver));
 
             println!("Initializing BNO085 IMU over I2C...");
-            let imu: Option<Arc<Mutex<dyn ImuTrait + Send>>> = match Bno085Imu::start() {
-                Ok(imu) => {
-                    println!("IMU successfully initialized!");
-                    Some(Arc::new(Mutex::new(imu)))
-                }
-                Err(_) => {
-                    println!("Could not start BNO085 IMU");
-                    None
-                }
-            };
+            let imu: Option<Arc<Mutex<dyn ImuTrait + Send>>> =
+                match Bno085Imu::start(use_game_rotation) {
+                    Ok(imu) => {
+                        println!("IMU successfully initialized!");
+                        Some(Arc::new(Mutex::new(imu)))
+                    }
+                    Err(_) => {
+                        println!("Could not start BNO085 IMU");
+                        None
+                    }
+                };
             (None, None, imu, Some(solver_arc))
         },
     );

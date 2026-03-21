@@ -47,10 +47,12 @@ struct AlignmentState {
     transform_calibration: Option<TransformCalibration>,
     // Store distinct rotational axes to continuously refine the 3D calibration via SVD
     calibration_axes: Vec<(Vector3<f64>, Vector3<f64>)>,
-    // Flag to track if the current mount_q was loaded from disk, to arm the safety tripwire
+    // Flag to track if the current mount_q was loaded from disk, to arm the SVD probationary period
     loaded_from_disk: bool,
     // Counter to throttle SD card writes
     calibration_updates_since_save: usize,
+    // Rolling history of expected vs true error for metric tracking
+    error_history: Vec<f64>,
 }
 
 impl Default for AlignmentState {
@@ -63,6 +65,7 @@ impl Default for AlignmentState {
             calibration_axes: Vec::new(),
             loaded_from_disk: false,
             calibration_updates_since_save: 0,
+            error_history: Vec::new(),
         }
     }
 }
@@ -74,7 +77,7 @@ pub struct Bno085Imu {
 }
 
 impl Bno085Imu {
-    pub fn start() -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn start(use_game_rotation: bool) -> Result<Self, Box<dyn std::error::Error>> {
         let (state_tx, state_rx) = watch::channel(None);
 
         let mut initial_alignment = AlignmentState::default();
@@ -93,17 +96,23 @@ impl Bno085Imu {
                     // nalgebra::Quaternion::new takes (w, i, j, k) -> (w, x, y, z)
                     initial_alignment.mount_q =
                         UnitQuaternion::new_normalize(nalgebra::Quaternion::new(w, x, y, z));
-                    initial_alignment.loaded_from_disk = true; // Arm the safety tripwire
+                    initial_alignment.loaded_from_disk = true; // Arm the SVD probationary period
                     info!(
                         "Successfully loaded saved calibration from {:?}: {:.3}, {:.3}, {:.3}, {:.3}",
                         cal_path, x, y, z, w
                     );
                 } else {
-                    info!("Could not parse calibration file at {:?}. Starting fresh.", cal_path);
+                    info!(
+                        "Could not parse calibration file at {:?}. Starting fresh.",
+                        cal_path
+                    );
                 }
             }
         } else {
-            info!("No calibration file found at {:?}. Starting fresh.", cal_path);
+            info!(
+                "No calibration file found at {:?}. Starting fresh.",
+                cal_path
+            );
         }
 
         let alignment = Arc::new(RwLock::new(initial_alignment));
@@ -127,8 +136,13 @@ impl Bno085Imu {
                 .expect("Failed to initialize BNO085 over I2C");
 
             let report_interval_ms = 20; // 50Hz
-            imu.enable_game_rotation_vector(report_interval_ms).unwrap();
-            info!("Hardware initialized at 50Hz.");
+            if use_game_rotation {
+                imu.enable_game_rotation_vector(report_interval_ms).unwrap();
+                info!("Hardware initialized at 50Hz using Game Rotation Vector (6-axis).");
+            } else {
+                imu.enable_rotation_vector(report_interval_ms).unwrap();
+                info!("Hardware initialized at 50Hz using Standard Rotation Vector (9-axis).");
+            }
 
             let mut prev_quat = UnitQuaternion::identity();
             let mut prev_time = SystemTime::now();
@@ -144,7 +158,13 @@ impl Bno085Imu {
                 let msg_count = imu.handle_all_messages(&mut delay, 5);
 
                 if msg_count > 0 {
-                    if let Ok(quat) = imu.game_rotation_quaternion() {
+                    let quat_result = if use_game_rotation {
+                        imu.game_rotation_quaternion()
+                    } else {
+                        imu.rotation_quaternion()
+                    };
+
+                    if let Ok(quat) = quat_result {
                         let mag_sq = quat[0] * quat[0]
                             + quat[1] * quat[1]
                             + quat[2] * quat[2]
@@ -223,7 +243,11 @@ impl Bno085Imu {
                     // Hardware watchdog
                     if last_msg_time.elapsed().unwrap_or_default() > Duration::from_secs(2) {
                         warn!("Sensor unresponsive for 2s. Sending hardware revive command...");
-                        let _ = imu.enable_game_rotation_vector(report_interval_ms);
+                        if use_game_rotation {
+                            let _ = imu.enable_game_rotation_vector(report_interval_ms);
+                        } else {
+                            let _ = imu.enable_rotation_vector(report_interval_ms);
+                        }
                         last_msg_time = SystemTime::now();
                     }
                 }
@@ -311,7 +335,10 @@ impl Bno085Imu {
             );
             match tokio::fs::write(&cal_path, data).await {
                 Ok(_) => debug!("Successfully wrote calibration back to {:?}", cal_path),
-                Err(e) => error!("Failed to write calibration to {:?}. Error: {}", cal_path, e),
+                Err(e) => error!(
+                    "CRITICAL: Failed to write calibration to {:?}. Error: {}",
+                    cal_path, e
+                ),
             }
         });
     }
@@ -343,144 +370,153 @@ impl ImuTrait for Bno085Imu {
                     let aligned_old_quat = old_quat * align.mount_q;
                     let aligned_hist_q = hist_q * align.mount_q;
 
-                    // Before we add anything to the SVD pool, we check if our current mount_q is totally wrong.
+                    // Calculate the error of our current calibration before running SVD
                     let imu_delta = aligned_old_quat.conjugate() * aligned_hist_q;
                     let expected_new_true_q = old_true_q * imu_delta;
 
                     let error_quat = expected_new_true_q.inverse() * new_true_q;
                     let error_angle = error_quat.angle().to_degrees();
 
-                    // Only trigger if we explicitly loaded data from disk on boot.
-                    // If we are starting fresh, we allow high initial error while the SVD pool builds.
-                    if align.loaded_from_disk && error_angle > 5.0 && !align.calibration_axes.is_empty() {
-                        let cal_path = get_calibration_file_path();
+                    // Log large errors just in case the camera was rotated or there was sensor noise
+                    if error_angle > 5.0 {
                         info!(
-                            "Error {:.2}° > 5.0°. Camera was likely rotated. Wiping disk calibration and starting fresh.",
+                            "Large tracking error detected: {:.2}° > 5.0°. (Camera may have been physically rotated, or temporary sensor noise)",
                             error_angle
                         );
-                        align.mount_q = UnitQuaternion::identity();
-                        align.calibration_axes.clear();
-                        align.loaded_from_disk = false; // Never trigger again this session
-                        align.calibration_updates_since_save = 0;
-                        
-                        if let Err(e) = std::fs::remove_file(&cal_path) {
-                            debug!("Could not delete calibration file at {:?} (it may not exist): {}", cal_path, e);
-                        }
-                        // Reset, treat this solve as a fresh baseline and skip the SVD step
-                    } else {
-                        // Continuous SVD calibration (Wahba's Problem)
-                        let q_true_delta = old_true_q.conjugate() * new_true_q;
-                        let q_imu_delta = old_quat.conjugate() * hist_q;
+                    }
 
-                        let angle_moved = q_true_delta.angle().to_degrees();
+                    // Continuous SVD calibration (Wahba's Problem)
+                    let q_true_delta = old_true_q.conjugate() * new_true_q;
+                    let q_imu_delta = old_quat.conjugate() * hist_q;
 
-                        if angle_moved > 0.5 {
-                            if let (Some(axis_true), Some(axis_imu)) =
-                                (q_true_delta.axis(), q_imu_delta.axis())
-                            {
-                                let t_vec = axis_true.into_inner();
-                                let i_vec = axis_imu.into_inner();
+                    let angle_moved = q_true_delta.angle().to_degrees();
 
-                                align.calibration_axes.push((t_vec, i_vec));
+                    if angle_moved > 0.5 {
+                        if let (Some(axis_true), Some(axis_imu)) =
+                            (q_true_delta.axis(), q_imu_delta.axis())
+                        {
+                            let t_vec = axis_true.into_inner();
+                            let i_vec = axis_imu.into_inner();
 
-                                if align.calibration_axes.len() > 100 {
-                                    align.calibration_axes.remove(0);
-                                }
+                            align.calibration_axes.push((t_vec, i_vec));
 
-                                let mut is_rank_sufficient = false;
-                                for i in 0..align.calibration_axes.len() {
-                                    for j in (i + 1)..align.calibration_axes.len() {
-                                        if align.calibration_axes[i]
-                                            .0
-                                            .dot(&align.calibration_axes[j].0)
-                                            .abs()
-                                            < 0.95
-                                        {
-                                            is_rank_sufficient = true;
-                                            break;
-                                        }
-                                    }
-                                    if is_rank_sufficient {
+                            if align.calibration_axes.len() > 100 {
+                                align.calibration_axes.remove(0);
+                            }
+
+                            let mut is_rank_sufficient = false;
+                            for i in 0..align.calibration_axes.len() {
+                                for j in (i + 1)..align.calibration_axes.len() {
+                                    if align.calibration_axes[i]
+                                        .0
+                                        .dot(&align.calibration_axes[j].0)
+                                        .abs()
+                                        < 0.95
+                                    {
+                                        is_rank_sufficient = true;
                                         break;
                                     }
                                 }
-
                                 if is_rank_sufficient {
-                                    let mut b = Matrix3::zeros();
+                                    break;
+                                }
+                            }
 
-                                    for (t, i) in &align.calibration_axes {
-                                        b += t * i.transpose();
+                            if is_rank_sufficient {
+                                let mut b = Matrix3::zeros();
+
+                                for (t, i) in &align.calibration_axes {
+                                    b += t * i.transpose();
+                                }
+
+                                let svd = b.svd(true, true);
+                                if let (Some(u), Some(v_t)) = (svd.u, svd.v_t) {
+                                    let det = (u * v_t).determinant();
+                                    let mut d = Matrix3::identity();
+
+                                    if det < 0.0 {
+                                        d[(2, 2)] = -1.0;
                                     }
 
-                                    let svd = b.svd(true, true);
-                                    if let (Some(u), Some(v_t)) = (svd.u, svd.v_t) {
-                                        let det = (u * v_t).determinant();
-                                        let mut d = Matrix3::identity();
+                                    let r_mount = u * d * v_t;
 
-                                        if det < 0.0 {
-                                            d[(2, 2)] = -1.0;
-                                        }
+                                    if r_mount.iter().all(|val| val.is_finite()) {
+                                        let rot3 = Rotation3::from_matrix_unchecked(r_mount);
+                                        let calculated_q =
+                                            UnitQuaternion::from_rotation_matrix(&rot3);
 
-                                        let r_mount = u * d * v_t;
-
-                                        if r_mount.iter().all(|val| val.is_finite()) {
-                                            let rot3 = Rotation3::from_matrix_unchecked(r_mount);
-                                            align.mount_q =
-                                                UnitQuaternion::from_rotation_matrix(&rot3);
-                                            
+                                        // If we loaded a mature matrix from disk, protect it from being overwritten
+                                        // by a noisy, low-sample-size SVD calculation until the pool reaches 15.
+                                        if align.loaded_from_disk
+                                            && align.calibration_axes.len() < 15
+                                        {
+                                            debug!(
+                                                "SVD calculated (Pool: {}), but deferring overwrite to protect loaded calibration until pool reaches 15.",
+                                                align.calibration_axes.len()
+                                            );
+                                        } else {
+                                            // The pool is either fresh, or has grown large enough to safely overwrite.
+                                            align.mount_q = calculated_q;
                                             align.calibration_updates_since_save += 1;
+
                                             debug!(
                                                 "Refined 3D mount via SVD. Pool: {} Updates since save: {}",
-                                                align.calibration_axes.len(), align.calibration_updates_since_save
+                                                align.calibration_axes.len(),
+                                                align.calibration_updates_since_save
                                             );
 
                                             // Only write to disk every 10 updates to save SD card wear
                                             if align.calibration_updates_since_save % 10 == 0 {
                                                 Self::save_calibration_to_disk(align.mount_q);
                                             }
-                                        } else {
-                                            debug!(
-                                                "SVD generated NaNs. Keeping previous safe mount_q."
-                                            );
                                         }
+                                    } else {
+                                        warn!("SVD generated NaNs. Keeping previous safe mount_q.");
                                     }
-                                } else {
-                                    debug!(
-                                        "Calibration pool lacks distinct axes. Need movement on a different plane to run SVD."
-                                    );
                                 }
+                            } else {
+                                debug!(
+                                    "Calibration pool lacks distinct axes. Need movement on a different plane to run SVD."
+                                );
                             }
-                        } else {
-                            debug!(
-                                "Movement ({:.2}°) too small to add to calibration pool.",
-                                angle_moved
-                            );
                         }
-
-                        // Recalculate error metric post-SVD refinement for reporting
-                        let final_aligned_old_quat = old_quat * align.mount_q;
-                        let final_aligned_hist_q = hist_q * align.mount_q;
-
-                        let final_imu_delta =
-                            final_aligned_old_quat.conjugate() * final_aligned_hist_q;
-                        let final_expected = old_true_q * final_imu_delta;
-
-                        let final_error_quat = final_expected.inverse() * new_true_q;
-                        let final_error_angle = final_error_quat.angle().to_degrees();
-
+                    } else {
                         debug!(
-                            "Calibration metric evaluated. Expected vs True error: {:.3}°",
-                            final_error_angle
+                            "Movement ({:.2}°) too small to add to calibration pool.",
+                            angle_moved
                         );
-
-                        align.transform_calibration = Some(TransformCalibration {
-                            transform_error_fraction: (final_error_angle / 100.0).clamp(0.0, 1.0),
-                            camera_view_gyro_axis: "+Z".to_string(),
-                            camera_view_misalignment: final_error_angle,
-                            camera_up_gyro_axis: "+Y".to_string(),
-                            camera_up_misalignment: final_error_angle,
-                        });
                     }
+
+                    // Recalculate error metric post-SVD refinement for reporting
+                    let final_aligned_old_quat = old_quat * align.mount_q;
+                    let final_aligned_hist_q = hist_q * align.mount_q;
+
+                    let final_imu_delta = final_aligned_old_quat.conjugate() * final_aligned_hist_q;
+                    let final_expected = old_true_q * final_imu_delta;
+
+                    let final_error_quat = final_expected.inverse() * new_true_q;
+                    let final_error_angle = final_error_quat.angle().to_degrees();
+
+                    // Update rolling average for error tracking (max 20 entries)
+                    align.error_history.push(final_error_angle);
+                    if align.error_history.len() > 20 {
+                        align.error_history.remove(0);
+                    }
+                    let avg_error: f64 = align.error_history.iter().sum::<f64>()
+                        / (align.error_history.len() as f64);
+
+                    info!(
+                        "Calibration metric evaluated. Expected vs True error: {:.3}° (Rolling Avg: {:.3}°)",
+                        final_error_angle, avg_error
+                    );
+
+                    align.transform_calibration = Some(TransformCalibration {
+                        transform_error_fraction: (final_error_angle / 100.0).clamp(0.0, 1.0),
+                        camera_view_gyro_axis: "+Z".to_string(),
+                        camera_view_misalignment: final_error_angle,
+                        camera_up_gyro_axis: "+Y".to_string(),
+                        camera_up_misalignment: final_error_angle,
+                    });
                 } else {
                     info!("Initial plate-solve anchor locked in.");
                     align.transform_calibration = Some(TransformCalibration {
@@ -515,12 +551,16 @@ impl ImuTrait for Bno085Imu {
         align.mount_q = UnitQuaternion::identity();
         align.calibration_axes.clear();
         align.transform_calibration = None;
-        align.loaded_from_disk = false; // Reset the flag just in case
+        align.loaded_from_disk = false;
         align.calibration_updates_since_save = 0;
-        
+        align.error_history.clear();
+
         let cal_path = get_calibration_file_path();
         if let Err(e) = std::fs::remove_file(&cal_path) {
-            debug!("Could not delete calibration file at {:?} on reset: {}", cal_path, e);
+            debug!(
+                "Could not delete calibration file at {:?} on reset: {}",
+                cal_path, e
+            );
         }
     }
 
