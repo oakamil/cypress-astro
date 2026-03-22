@@ -8,7 +8,7 @@ This crate is part of the broader `cypress-astro` workspace.
 
 The `cypress-imu` package provides an implementation of the Cedar™ `ImuTrait` using the BNO085 sensor. This allows the Cedar™ telescope control system to estimate positioning between camera plate-solves.
 
-`cypress-imu` supports both standard rotation vector mode (9-axis) and game rotation vector mode (6-axis - the magnetometer is disabled).
+`cypress-imu` supports standard rotation vector mode (9-axis), game rotation vector mode (6-axis - the magnetometer is disabled), AR/VR stabilized rotation vector mode (9-axis stabilized), and AR/VR stabilized game rotation vectore mode (6-axis stabilized).
 
 ## Getting Started
 
