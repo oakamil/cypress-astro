@@ -17,6 +17,14 @@ use tokio::sync::{RwLock, watch};
 
 const CALIBRATION_FILE: &str = "imu_calibration.txt";
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ImuRotationMode {
+    Standard,
+    Game,
+    ArvrStabilized,
+    ArvrStabilizedGame,
+}
+
 // Helper to strictly enforce saving to the program's launch directory
 fn get_calibration_file_path() -> std::path::PathBuf {
     std::env::current_dir()
@@ -77,13 +85,17 @@ pub struct Bno085Imu {
 }
 
 impl Bno085Imu {
-    pub fn start(use_game_rotation: bool) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn start(rotation_mode: ImuRotationMode) -> Result<Self, Box<dyn std::error::Error>> {
+        // We use a watch channel so the latest IMU state can be asynchronously read
+        // by the engine at any time without blocking or needing to consume a queue.
         let (state_tx, state_rx) = watch::channel(None);
 
         let mut initial_alignment = AlignmentState::default();
         let cal_path = get_calibration_file_path();
 
         // Load previous calibration
+        // Loading this from disk ensures we have an immediate "best guess" tracking capability
+        // while the SVD algorithm waits for enough distinct physical movements to build a fresh matrix.
         if let Ok(data) = std::fs::read_to_string(&cal_path) {
             let parts: Vec<&str> = data.trim().split(',').collect();
             if parts.len() == 4 {
@@ -117,10 +129,12 @@ impl Bno085Imu {
 
         let alignment = Arc::new(RwLock::new(initial_alignment));
 
-        // 5 seconds of IMU history
-        let history = Arc::new(Mutex::new(VecDeque::with_capacity(250)));
+        // 3 seconds of IMU history (capped at 300 items for 100Hz)
+        let history = Arc::new(Mutex::new(VecDeque::with_capacity(300)));
         let history_clone = Arc::clone(&history);
 
+        // We spawn a dedicated OS thread for hardware polling because I2C operations are
+        // blocking and we strictly do not want to stall the async Tokio runtime.
         std::thread::spawn(move || {
             use bno080::interface::i2c::I2cInterface;
             use bno080::wrapper::BNO080;
@@ -131,17 +145,35 @@ impl Bno085Imu {
             let interface = I2cInterface::new(i2c, 0x4B);
             let mut imu = BNO080::new_with_interface(interface);
 
+            // The BNO085 requires an embedded-hal Delay struct for certain startup sequences
             let mut delay = Delay {};
             imu.init(&mut delay)
                 .expect("Failed to initialize BNO085 over I2C");
 
-            let report_interval_ms = 20; // 50Hz
-            if use_game_rotation {
-                imu.enable_game_rotation_vector(report_interval_ms).unwrap();
-                info!("Hardware initialized at 50Hz using Game Rotation Vector (6-axis).");
-            } else {
-                imu.enable_rotation_vector(report_interval_ms).unwrap();
-                info!("Hardware initialized at 50Hz using Standard Rotation Vector (9-axis).");
+            let report_interval_ms = 10; // 100Hz
+            match rotation_mode {
+                ImuRotationMode::Standard => {
+                    imu.enable_rotation_vector(report_interval_ms).unwrap();
+                    info!("Hardware initialized at 100Hz using Standard Rotation Vector (9-axis).");
+                }
+                ImuRotationMode::Game => {
+                    imu.enable_game_rotation_vector(report_interval_ms).unwrap();
+                    info!("Hardware initialized at 100Hz using Game Rotation Vector (6-axis).");
+                }
+                ImuRotationMode::ArvrStabilized => {
+                    imu.enable_arvr_stabilized_rotation_vector(report_interval_ms)
+                        .unwrap();
+                    info!(
+                        "Hardware initialized at 100Hz using AR/VR Stabilized Rotation Vector (9-axis)."
+                    );
+                }
+                ImuRotationMode::ArvrStabilizedGame => {
+                    imu.enable_arvr_stabilized_game_rotation_vector(report_interval_ms)
+                        .unwrap();
+                    info!(
+                        "Hardware initialized at 100Hz using AR/VR Stabilized Game Rotation Vector (6-axis)."
+                    );
+                }
             }
 
             let mut prev_quat = UnitQuaternion::identity();
@@ -152,16 +184,22 @@ impl Bno085Imu {
             let mut last_debug_print = Instant::now();
             let mut last_msg_time = SystemTime::now(); // Hardware watchdog tracker
 
+            // Main hardware polling loop. Extracts messages from the I2C bus as fast as they arrive.
             loop {
                 std::thread::sleep(Duration::from_millis(5));
 
                 let msg_count = imu.handle_all_messages(&mut delay, 5);
 
                 if msg_count > 0 {
-                    let quat_result = if use_game_rotation {
-                        imu.game_rotation_quaternion()
-                    } else {
-                        imu.rotation_quaternion()
+                    let quat_result = match rotation_mode {
+                        ImuRotationMode::Standard => imu.rotation_quaternion(),
+                        ImuRotationMode::Game => imu.game_rotation_quaternion(),
+                        ImuRotationMode::ArvrStabilized => {
+                            imu.arvr_stabilized_rotation_quaternion()
+                        }
+                        ImuRotationMode::ArvrStabilizedGame => {
+                            imu.arvr_stabilized_game_rotation_quaternion()
+                        }
                     };
 
                     if let Ok(quat) = quat_result {
@@ -184,7 +222,7 @@ impl Bno085Imu {
 
                             let dt = now
                                 .duration_since(prev_time)
-                                .unwrap_or(Duration::from_millis(20))
+                                .unwrap_or(Duration::from_millis(10)) // Default to 10ms for 100Hz
                                 .as_secs_f64();
 
                             let q_diff = prev_quat.conjugate() * current_quat;
@@ -225,13 +263,14 @@ impl Bno085Imu {
                             {
                                 let mut hist = history_clone.lock().unwrap();
                                 hist.push_back((now, current_quat));
-                                if hist.len() > 3000 {
+                                // Strict 300 record cap (3 seconds at 100Hz)
+                                if hist.len() > 300 {
                                     hist.pop_front();
                                 }
                             }
 
                             if last_debug_print.elapsed() >= Duration::from_secs(1) {
-                                debug!("Alive @ 50Hz. TrackerState: {:?}", tracker_state);
+                                debug!("Alive @ 100Hz. TrackerState: {:?}", tracker_state);
                                 last_debug_print = Instant::now();
                             }
 
@@ -240,13 +279,26 @@ impl Bno085Imu {
                         }
                     }
                 } else {
-                    // Hardware watchdog
+                    // Hardware watchdog: The BNO085 occasionally locks up over I2C.
+                    // If we haven't seen a packet in 2 seconds, we re-send the enable command.
                     if last_msg_time.elapsed().unwrap_or_default() > Duration::from_secs(2) {
                         warn!("Sensor unresponsive for 2s. Sending hardware revive command...");
-                        if use_game_rotation {
-                            let _ = imu.enable_game_rotation_vector(report_interval_ms);
-                        } else {
-                            let _ = imu.enable_rotation_vector(report_interval_ms);
+                        match rotation_mode {
+                            ImuRotationMode::Standard => {
+                                let _ = imu.enable_rotation_vector(report_interval_ms);
+                            }
+                            ImuRotationMode::Game => {
+                                let _ = imu.enable_game_rotation_vector(report_interval_ms);
+                            }
+                            ImuRotationMode::ArvrStabilized => {
+                                let _ =
+                                    imu.enable_arvr_stabilized_rotation_vector(report_interval_ms);
+                            }
+                            ImuRotationMode::ArvrStabilizedGame => {
+                                let _ = imu.enable_arvr_stabilized_game_rotation_vector(
+                                    report_interval_ms,
+                                );
+                            }
                         }
                         last_msg_time = SystemTime::now();
                     }
@@ -497,18 +549,22 @@ impl ImuTrait for Bno085Imu {
                     let final_error_quat = final_expected.inverse() * new_true_q;
                     let final_error_angle = final_error_quat.angle().to_degrees();
 
-                    // Update rolling average for error tracking (max 20 entries)
-                    align.error_history.push(final_error_angle);
-                    if align.error_history.len() > 20 {
-                        align.error_history.remove(0);
-                    }
-                    let avg_error: f64 = align.error_history.iter().sum::<f64>()
-                        / (align.error_history.len() as f64);
+                    // Only update the rolling average and print the log if this is the first plate solve
+                    // after a distinct physical movement (ignoring solves taken while stationary)
+                    if angle_moved > 0.5 {
+                        // Update rolling average for error tracking (max 20 entries)
+                        align.error_history.push(final_error_angle);
+                        if align.error_history.len() > 20 {
+                            align.error_history.remove(0);
+                        }
+                        let avg_error: f64 = align.error_history.iter().sum::<f64>()
+                            / (align.error_history.len() as f64);
 
-                    info!(
-                        "Calibration metric evaluated. Expected vs True error: {:.3}° (Rolling Avg: {:.3}°)",
-                        final_error_angle, avg_error
-                    );
+                        info!(
+                            "Calibration metric evaluated. Expected vs True error: {:.3}° (Rolling Avg: {:.3}°)",
+                            final_error_angle, avg_error
+                        );
+                    }
 
                     align.transform_calibration = Some(TransformCalibration {
                         transform_error_fraction: (final_error_angle / 100.0).clamp(0.0, 1.0),

@@ -1,6 +1,6 @@
 use std::{path::Path, sync::Arc};
 
-use cypress_imu::bno085::Bno085Imu;
+use cypress_imu::bno085::{Bno085Imu, ImuRotationMode};
 use cypress_solver::Tetra3Solver;
 use pico_args::Arguments;
 use tetra3::Solver;
@@ -17,7 +17,30 @@ fn main() {
         /*flutter_app_path=*/ "../cedar/cedar-aim/cedar_flutter/build/web",
         /*get_dependencies=*/
         |mut pargs: Arguments| {
-            let use_game_rotation = pargs.contains(["-g", "--use-game-rotation"]);
+            // Parse the IMU rotation mode argument (-i or --imu-rotation-mode)
+            // Available modes:
+            // 1: Standard Rotation Mode (9-axis, default)
+            // 2: Game Rotation Mode (6-axis, no compass)
+            // 3: AR/VR Stabilized Rotation Mode (9-axis, stabilized)
+            // 4: AR/VR Stabilized Game Rotation Mode (6-axis, stabilized)
+            let mode_val: u8 = pargs
+                .opt_value_from_str(["-i", "--imu-rotation-mode"])
+                .unwrap_or(None)
+                .unwrap_or(1); // Default to 1 (Standard) if not provided
+
+            let rotation_mode = match mode_val {
+                1 => ImuRotationMode::Standard,
+                2 => ImuRotationMode::Game,
+                3 => ImuRotationMode::ArvrStabilized,
+                4 => ImuRotationMode::ArvrStabilizedGame,
+                _ => {
+                    println!(
+                        "Invalid IMU rotation mode provided ({}). Defaulting to Standard (1).",
+                        mode_val
+                    );
+                    ImuRotationMode::Standard
+                }
+            };
 
             let db_path = Path::new("../cedar/data/default_database.npz");
             let solver = Tetra3Solver::new(
@@ -27,17 +50,17 @@ fn main() {
                 Arc::new(Mutex::new(solver));
 
             println!("Initializing BNO085 IMU over I2C...");
-            let imu: Option<Arc<Mutex<dyn ImuTrait + Send>>> =
-                match Bno085Imu::start(use_game_rotation) {
-                    Ok(imu) => {
-                        println!("IMU successfully initialized!");
-                        Some(Arc::new(Mutex::new(imu)))
-                    }
-                    Err(_) => {
-                        println!("Could not start BNO085 IMU");
-                        None
-                    }
-                };
+            let imu: Option<Arc<Mutex<dyn ImuTrait + Send>>> = match Bno085Imu::start(rotation_mode)
+            {
+                Ok(imu) => {
+                    println!("IMU successfully initialized!");
+                    Some(Arc::new(Mutex::new(imu)))
+                }
+                Err(_) => {
+                    println!("Could not start BNO085 IMU");
+                    None
+                }
+            };
             (None, None, imu, Some(solver_arc))
         },
     );

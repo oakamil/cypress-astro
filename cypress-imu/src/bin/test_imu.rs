@@ -5,19 +5,49 @@ use std::time::{Duration, SystemTime};
 use tokio::time;
 
 use cedar_elements::imu_trait::{HorizonCoordinates, ImuTrait, TrackerState};
-use cypress_imu::bno085::Bno085Imu;
+use cypress_imu::bno085::{Bno085Imu, ImuRotationMode};
 use env_logger;
+use pico_args::Arguments;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    env_logger::init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+
+    // Parse command line arguments
+    let mut pargs = Arguments::from_env();
+
+    // Parse the IMU rotation mode argument (-i or --imu-rotation-mode)
+    // Available modes:
+    // 1: Standard Rotation Mode (9-axis, default)
+    // 2: Game Rotation Mode (6-axis, no compass)
+    // 3: AR/VR Stabilized Rotation Mode (9-axis, stabilized)
+    // 4: AR/VR Stabilized Game Rotation Mode (6-axis, stabilized)
+    let mode_val: u8 = pargs
+        .opt_value_from_str(["-i", "--imu-rotation-mode"])
+        .unwrap_or(None)
+        .unwrap_or(1); // Default to 1 (Standard) if not provided
+
+    let rotation_mode = match mode_val {
+        1 => ImuRotationMode::Standard,
+        2 => ImuRotationMode::Game,
+        3 => ImuRotationMode::ArvrStabilized,
+        4 => ImuRotationMode::ArvrStabilizedGame,
+        _ => {
+            println!(
+                "Invalid IMU rotation mode provided ({}). Defaulting to Standard (1).",
+                mode_val
+            );
+            ImuRotationMode::Standard
+        }
+    };
+
     println!("Initializing BNO085 over I2C...");
 
-    let imu = Bno085Imu::start(false)?;
+    // Pass the parsed rotation mode instead of the hardcoded boolean
+    let imu = Bno085Imu::start(rotation_mode)?;
 
     println!("Waiting for sensor fusion algorithm to converge (3 seconds)...");
 
-    // --- THE CLEAN STARTUP LOOP ---
     // We block the plate solve until the IMU drops its 'Lost' state,
     // which guarantees both hardware initialization and gravity alignment are complete.
     while imu.get_tracker_state().await == TrackerState::Lost {

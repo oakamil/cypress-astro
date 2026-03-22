@@ -589,7 +589,7 @@ dependencies = [
 [[package]]
 name = "bno080"
 version = "0.1.3"
-source = "git+https://github.com/oakamil/bno080.git#5d259e2a58674503f66165b5211cbb02033da8df"
+source = "git+https://github.com/oakamil/bno080.git?branch=arvr#abb16726f64d5ba4c11f1f82c7e447e21ac2e0a4"
 dependencies = [
  "embedded-hal",
 ]
@@ -1146,6 +1146,7 @@ dependencies = [
  "linux-embedded-hal",
  "log",
  "nalgebra 0.34.1",
+ "pico-args",
  "tokio",
 ]
 
