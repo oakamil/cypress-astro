@@ -13,6 +13,7 @@ git clone https://github.com/smroid/cedar-aim.git
 git clone https://github.com/smroid/cedar-camera.git
 git clone https://github.com/smroid/cedar-detect.git
 git clone https://github.com/smroid/cedar-server.git
+git clone https://github.com/smroid/tetra3_server.git
 git clone https://github.com/oakamil/cypress-astro.git
 ```
 
@@ -44,11 +45,18 @@ $HOME/cedar/bin/cypress-server
 
 ### IMU Integration
 
-If an IMU is available `cypress-server` will utilize the IMU in 9-axis mode by default. To active 6-axis mode include the `-g` or `--use-game-rotation` option.
+If an IMU is available `cypress-server` will utilize the IMU in standard 9-axis mode by default. To use a different mode include the -i or --imu-rotation-mode argument.
 
 ```
-$HOME/cedar/bin/cypress-server -g
+$HOME/cedar/bin/cypress-server -i 2
 ```
+
+| Mode | Description |
+| ---| --- |
+| 1 | Standard 9-axis rotation vector |
+| 2 | Game rotation vector (6-axis, magnetometer is ignored) |
+| 3 | AR/VR stabilized 9-axis rotation vector |
+| 4 | AR/VR stabilized game rotation vector (6-axis) |
 
 ## License
 
