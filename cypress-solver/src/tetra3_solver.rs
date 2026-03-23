@@ -14,7 +14,7 @@ use canonical_error::{
     CanonicalError, deadline_exceeded_error, invalid_argument_error, not_found_error,
 };
 use cedar_elements::{
-    cedar::{ImageCoord, PlateSolution},
+    cedar::{ImageCoord, PlateSolution, StarInfo},
     cedar_common::CelestialCoord,
     imu_trait::EquatorialCoordinates,
     solver_trait::{SolveExtension, SolveParams, SolverTrait},
@@ -106,7 +106,6 @@ impl SolverTrait for Tetra3Solver {
             target_sky_coord,
         };
 
-        // Pass the properly mapped array into the solver
         let result = solver.solve(&centroids_array, (height as f64, width as f64), options);
 
         match result.status {
@@ -115,8 +114,7 @@ impl SolverTrait for Tetra3Solver {
                 // then convert that into the required Protobuf Duration struct.
                 let solve_duration = Duration::from_secs_f64(result.t_solve_ms / 1000.0);
 
-                // Populate the correct `PlateSolution` fields cleanly
-                Ok(PlateSolution {
+                let mut plate_solution = PlateSolution {
                     image_sky_coord: Some(CelestialCoord {
                         ra: result.ra.unwrap_or(0.0),
                         dec: result.dec.unwrap_or(0.0),
@@ -126,9 +124,70 @@ impl SolverTrait for Tetra3Solver {
                     distortion: result.distortion,
                     rmse: result.rmse.unwrap_or(0.0),
                     p90_error: result.p90e.unwrap_or(0.0),
+                    max_error: result.maxe.unwrap_or(0.0),
+                    num_matches: result.matches.unwrap_or(0) as i32,
+                    prob: result.prob.unwrap_or(0.0),
+                    epoch_equinox: result.epoch_equinox.unwrap_or(0.0) as i32,
+                    epoch_proper_motion: result.epoch_proper_motion.unwrap_or(0.0) as f32,
                     solve_time: solve_duration.try_into().ok(),
                     ..Default::default()
-                })
+                };
+
+                // Map requested Target Sky Coords
+                if let (Some(ras), Some(decs)) = (&result.target_ra, &result.target_dec) {
+                    for (&ra, &dec) in ras.iter().zip(decs.iter()) {
+                        plate_solution
+                            .target_sky_coord
+                            .push(CelestialCoord { ra, dec });
+                    }
+                }
+
+                // Map requested Target Pixels
+                if let (Some(ys), Some(xs)) = (&result.target_y, &result.target_x) {
+                    for (&y_opt, &x_opt) in ys.iter().zip(xs.iter()) {
+                        if let (Some(y), Some(x)) = (y_opt, x_opt) {
+                            plate_solution.target_pixel.push(ImageCoord { x, y });
+                        }
+                    }
+                }
+
+                // Map Matched Stars (Matched image centroids + Catalog vectors)
+                if let (Some(cents), Some(stars)) =
+                    (&result.matched_centroids, &result.matched_stars)
+                {
+                    for (cent, star) in cents.iter().zip(stars.iter()) {
+                        plate_solution.matched_stars.push(StarInfo {
+                            // cent is formatted as [y, x] internally inside Tetra3
+                            pixel: Some(ImageCoord {
+                                x: cent[1],
+                                y: cent[0],
+                            }),
+                            sky_coord: Some(CelestialCoord {
+                                ra: star[0],
+                                dec: star[1],
+                            }),
+                            mag: star[2] as f32,
+                        });
+                    }
+                }
+
+                // Map overall Catalog Stars in the FOV
+                if let Some(cat_stars) = &result.catalog_stars {
+                    for &(ra, dec, mag, y, x) in cat_stars {
+                        plate_solution.catalog_stars.push(StarInfo {
+                            pixel: Some(ImageCoord { x, y }),
+                            sky_coord: Some(CelestialCoord { ra, dec }),
+                            mag: mag as f32,
+                        });
+                    }
+                }
+
+                // Flatten and map Rotation Matrix
+                if let Some(rot_mat) = result.rotation_matrix {
+                    plate_solution.rotation_matrix = rot_mat.iter().cloned().collect();
+                }
+
+                Ok(plate_solution)
             }
             _ => {
                 // IMU fallback

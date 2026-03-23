@@ -53,8 +53,8 @@ struct AlignmentState {
     mount_q: UnitQuaternion<f64>,
     // The calculated calibration health between the camera and IMU.
     transform_calibration: Option<TransformCalibration>,
-    // Store distinct rotational axes to continuously refine the 3D calibration via SVD
-    calibration_axes: Vec<(Vector3<f64>, Vector3<f64>)>,
+    // Store distinct rotational axes and their movement angle to continuously refine the 3D calibration via angle-weighted SVD
+    calibration_axes: Vec<(Vector3<f64>, Vector3<f64>, f64)>,
     // Flag to track if the current mount_q was loaded from disk, to arm the SVD probationary period
     loaded_from_disk: bool,
     // Counter to throttle SD card writes
@@ -86,7 +86,7 @@ pub struct Bno085Imu {
 
 impl Bno085Imu {
     pub fn start(rotation_mode: ImuRotationMode) -> Result<Self, Box<dyn std::error::Error>> {
-        // We use a watch channel so the latest IMU state can be asynchronously read
+        // We use a watch channel so the latest IMU state can be asynchronously read 
         // by the engine at any time without blocking or needing to consume a queue.
         let (state_tx, state_rx) = watch::channel(None);
 
@@ -133,7 +133,7 @@ impl Bno085Imu {
         let history = Arc::new(Mutex::new(VecDeque::with_capacity(300)));
         let history_clone = Arc::clone(&history);
 
-        // We spawn a dedicated OS thread for hardware polling because I2C operations are
+        // We spawn a dedicated OS thread for hardware polling because I2C operations are 
         // blocking and we strictly do not want to stall the async Tokio runtime.
         std::thread::spawn(move || {
             use bno080::interface::i2c::I2cInterface;
@@ -161,18 +161,12 @@ impl Bno085Imu {
                     info!("Hardware initialized at 100Hz using Game Rotation Vector (6-axis).");
                 }
                 ImuRotationMode::ArvrStabilized => {
-                    imu.enable_arvr_stabilized_rotation_vector(report_interval_ms)
-                        .unwrap();
-                    info!(
-                        "Hardware initialized at 100Hz using AR/VR Stabilized Rotation Vector (9-axis)."
-                    );
+                    imu.enable_arvr_stabilized_rotation_vector(report_interval_ms).unwrap();
+                    info!("Hardware initialized at 100Hz using AR/VR Stabilized Rotation Vector (9-axis).");
                 }
                 ImuRotationMode::ArvrStabilizedGame => {
-                    imu.enable_arvr_stabilized_game_rotation_vector(report_interval_ms)
-                        .unwrap();
-                    info!(
-                        "Hardware initialized at 100Hz using AR/VR Stabilized Game Rotation Vector (6-axis)."
-                    );
+                    imu.enable_arvr_stabilized_game_rotation_vector(report_interval_ms).unwrap();
+                    info!("Hardware initialized at 100Hz using AR/VR Stabilized Game Rotation Vector (6-axis).");
                 }
             }
 
@@ -194,12 +188,8 @@ impl Bno085Imu {
                     let quat_result = match rotation_mode {
                         ImuRotationMode::Standard => imu.rotation_quaternion(),
                         ImuRotationMode::Game => imu.game_rotation_quaternion(),
-                        ImuRotationMode::ArvrStabilized => {
-                            imu.arvr_stabilized_rotation_quaternion()
-                        }
-                        ImuRotationMode::ArvrStabilizedGame => {
-                            imu.arvr_stabilized_game_rotation_quaternion()
-                        }
+                        ImuRotationMode::ArvrStabilized => imu.arvr_stabilized_rotation_quaternion(),
+                        ImuRotationMode::ArvrStabilizedGame => imu.arvr_stabilized_game_rotation_quaternion(),
                     };
 
                     if let Ok(quat) = quat_result {
@@ -284,21 +274,10 @@ impl Bno085Imu {
                     if last_msg_time.elapsed().unwrap_or_default() > Duration::from_secs(2) {
                         warn!("Sensor unresponsive for 2s. Sending hardware revive command...");
                         match rotation_mode {
-                            ImuRotationMode::Standard => {
-                                let _ = imu.enable_rotation_vector(report_interval_ms);
-                            }
-                            ImuRotationMode::Game => {
-                                let _ = imu.enable_game_rotation_vector(report_interval_ms);
-                            }
-                            ImuRotationMode::ArvrStabilized => {
-                                let _ =
-                                    imu.enable_arvr_stabilized_rotation_vector(report_interval_ms);
-                            }
-                            ImuRotationMode::ArvrStabilizedGame => {
-                                let _ = imu.enable_arvr_stabilized_game_rotation_vector(
-                                    report_interval_ms,
-                                );
-                            }
+                            ImuRotationMode::Standard => { let _ = imu.enable_rotation_vector(report_interval_ms); }
+                            ImuRotationMode::Game => { let _ = imu.enable_game_rotation_vector(report_interval_ms); }
+                            ImuRotationMode::ArvrStabilized => { let _ = imu.enable_arvr_stabilized_rotation_vector(report_interval_ms); }
+                            ImuRotationMode::ArvrStabilizedGame => { let _ = imu.enable_arvr_stabilized_game_rotation_vector(report_interval_ms); }
                         }
                         last_msg_time = SystemTime::now();
                     }
@@ -450,7 +429,8 @@ impl ImuTrait for Bno085Imu {
                             let t_vec = axis_true.into_inner();
                             let i_vec = axis_imu.into_inner();
 
-                            align.calibration_axes.push((t_vec, i_vec));
+                            // Store the angle_moved as a weight so larger slews have a stronger pull on the calibration
+                            align.calibration_axes.push((t_vec, i_vec, angle_moved));
 
                             if align.calibration_axes.len() > 100 {
                                 align.calibration_axes.remove(0);
@@ -477,8 +457,9 @@ impl ImuTrait for Bno085Imu {
                             if is_rank_sufficient {
                                 let mut b = Matrix3::zeros();
 
-                                for (t, i) in &align.calibration_axes {
-                                    b += t * i.transpose();
+                                // Angle-Weighted SVD: Multiply the outer product by the angle moved
+                                for (t, i, weight) in &align.calibration_axes {
+                                    b += (t * i.transpose()) * *weight;
                                 }
 
                                 let svd = b.svd(true, true);
@@ -512,7 +493,7 @@ impl ImuTrait for Bno085Imu {
                                             align.calibration_updates_since_save += 1;
 
                                             debug!(
-                                                "Refined 3D mount via SVD. Pool: {} Updates since save: {}",
+                                                "Refined 3D mount via angle-weighted SVD. Pool: {} Updates since save: {}",
                                                 align.calibration_axes.len(),
                                                 align.calibration_updates_since_save
                                             );
@@ -549,9 +530,9 @@ impl ImuTrait for Bno085Imu {
                     let final_error_quat = final_expected.inverse() * new_true_q;
                     let final_error_angle = final_error_quat.angle().to_degrees();
 
-                    // Only update the rolling average and print the log if this is the first plate solve
-                    // after a distinct physical movement (ignoring solves taken while stationary)
-                    if angle_moved > 0.5 {
+                    // Only update the rolling average and print the log if this is the first plate solve 
+                    // after a larger distinct physical movement (> 5.0 degrees)
+                    if angle_moved > 5.0 {
                         // Update rolling average for error tracking (max 20 entries)
                         align.error_history.push(final_error_angle);
                         if align.error_history.len() > 20 {
