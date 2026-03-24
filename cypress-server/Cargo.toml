@@ -14,4 +14,4 @@ cedar-elements = { path = "../../cedar-server/elements" }
 cedar-server = { path = "../../cedar-server/server" }
 pico-args = "0.5.0"
 tokio = { version = "1.0", features = ["rt-multi-thread", "sync"] }
-tetra3 = { git = "https://github.com/oakamil/tetra-solve-rs.git" }
+tetra3 = { git = "https://github.com/oakamil/olive-solve.git" }
