@@ -82,11 +82,15 @@ pub struct Bno085Imu {
     state_rx: watch::Receiver<Option<ImuUpdate>>,
     alignment: Arc<RwLock<AlignmentState>>,
     history: Arc<Mutex<VecDeque<(SystemTime, UnitQuaternion<f64>)>>>,
+    use_angle_weighted_svd: bool,
 }
 
 impl Bno085Imu {
-    pub fn start(rotation_mode: ImuRotationMode) -> Result<Self, Box<dyn std::error::Error>> {
-        // We use a watch channel so the latest IMU state can be asynchronously read
+    pub fn start(
+        rotation_mode: ImuRotationMode,
+        use_angle_weighted_svd: bool,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        // We use a watch channel so the latest IMU state can be asynchronously read 
         // by the engine at any time without blocking or needing to consume a queue.
         let (state_tx, state_rx) = watch::channel(None);
 
@@ -133,7 +137,7 @@ impl Bno085Imu {
         let history = Arc::new(Mutex::new(VecDeque::with_capacity(300)));
         let history_clone = Arc::clone(&history);
 
-        // We spawn a dedicated OS thread for hardware polling because I2C operations are
+        // We spawn a dedicated OS thread for hardware polling because I2C operations are 
         // blocking and we strictly do not want to stall the async Tokio runtime.
         std::thread::spawn(move || {
             use bno080::interface::i2c::I2cInterface;
@@ -161,18 +165,12 @@ impl Bno085Imu {
                     info!("Hardware initialized at 100Hz using Game Rotation Vector (6-axis).");
                 }
                 ImuRotationMode::ArvrStabilized => {
-                    imu.enable_arvr_stabilized_rotation_vector(report_interval_ms)
-                        .unwrap();
-                    info!(
-                        "Hardware initialized at 100Hz using AR/VR Stabilized Rotation Vector (9-axis)."
-                    );
+                    imu.enable_arvr_stabilized_rotation_vector(report_interval_ms).unwrap();
+                    info!("Hardware initialized at 100Hz using AR/VR Stabilized Rotation Vector (9-axis).");
                 }
                 ImuRotationMode::ArvrStabilizedGame => {
-                    imu.enable_arvr_stabilized_game_rotation_vector(report_interval_ms)
-                        .unwrap();
-                    info!(
-                        "Hardware initialized at 100Hz using AR/VR Stabilized Game Rotation Vector (6-axis)."
-                    );
+                    imu.enable_arvr_stabilized_game_rotation_vector(report_interval_ms).unwrap();
+                    info!("Hardware initialized at 100Hz using AR/VR Stabilized Game Rotation Vector (6-axis).");
                 }
             }
 
@@ -194,12 +192,8 @@ impl Bno085Imu {
                     let quat_result = match rotation_mode {
                         ImuRotationMode::Standard => imu.rotation_quaternion(),
                         ImuRotationMode::Game => imu.game_rotation_quaternion(),
-                        ImuRotationMode::ArvrStabilized => {
-                            imu.arvr_stabilized_rotation_quaternion()
-                        }
-                        ImuRotationMode::ArvrStabilizedGame => {
-                            imu.arvr_stabilized_game_rotation_quaternion()
-                        }
+                        ImuRotationMode::ArvrStabilized => imu.arvr_stabilized_rotation_quaternion(),
+                        ImuRotationMode::ArvrStabilizedGame => imu.arvr_stabilized_game_rotation_quaternion(),
                     };
 
                     if let Ok(quat) = quat_result {
@@ -284,21 +278,10 @@ impl Bno085Imu {
                     if last_msg_time.elapsed().unwrap_or_default() > Duration::from_secs(2) {
                         warn!("Sensor unresponsive for 2s. Sending hardware revive command...");
                         match rotation_mode {
-                            ImuRotationMode::Standard => {
-                                let _ = imu.enable_rotation_vector(report_interval_ms);
-                            }
-                            ImuRotationMode::Game => {
-                                let _ = imu.enable_game_rotation_vector(report_interval_ms);
-                            }
-                            ImuRotationMode::ArvrStabilized => {
-                                let _ =
-                                    imu.enable_arvr_stabilized_rotation_vector(report_interval_ms);
-                            }
-                            ImuRotationMode::ArvrStabilizedGame => {
-                                let _ = imu.enable_arvr_stabilized_game_rotation_vector(
-                                    report_interval_ms,
-                                );
-                            }
+                            ImuRotationMode::Standard => { let _ = imu.enable_rotation_vector(report_interval_ms); }
+                            ImuRotationMode::Game => { let _ = imu.enable_game_rotation_vector(report_interval_ms); }
+                            ImuRotationMode::ArvrStabilized => { let _ = imu.enable_arvr_stabilized_rotation_vector(report_interval_ms); }
+                            ImuRotationMode::ArvrStabilizedGame => { let _ = imu.enable_arvr_stabilized_game_rotation_vector(report_interval_ms); }
                         }
                         last_msg_time = SystemTime::now();
                     }
@@ -310,6 +293,7 @@ impl Bno085Imu {
             state_rx,
             alignment,
             history,
+            use_angle_weighted_svd,
         })
     }
 
@@ -419,24 +403,6 @@ impl ImuTrait for Bno085Imu {
                 {
                     let old_true_q = Self::horizon_to_quat(&old_horizon);
 
-                    let aligned_old_quat = old_quat * align.mount_q;
-                    let aligned_hist_q = hist_q * align.mount_q;
-
-                    // Calculate the error of our current calibration before running SVD
-                    let imu_delta = aligned_old_quat.conjugate() * aligned_hist_q;
-                    let expected_new_true_q = old_true_q * imu_delta;
-
-                    let error_quat = expected_new_true_q.inverse() * new_true_q;
-                    let error_angle = error_quat.angle().to_degrees();
-
-                    // Log large errors just in case the camera was rotated or there was sensor noise
-                    if error_angle > 5.0 {
-                        info!(
-                            "Large tracking error detected: {:.2}° > 5.0°. (Camera may have been physically rotated, or temporary sensor noise)",
-                            error_angle
-                        );
-                    }
-
                     // Continuous SVD calibration (Wahba's Problem)
                     let q_true_delta = old_true_q.conjugate() * new_true_q;
                     let q_imu_delta = old_quat.conjugate() * hist_q;
@@ -478,9 +444,11 @@ impl ImuTrait for Bno085Imu {
                             if is_rank_sufficient {
                                 let mut b = Matrix3::zeros();
 
-                                // Angle-Weighted SVD: Multiply the outer product by the angle moved
+                                // SVD Matrix Construction: Optionally multiply the outer product by the angle moved
+                                // to weight larger slews more heavily, or treat all movements equally (1.0).
                                 for (t, i, weight) in &align.calibration_axes {
-                                    b += (t * i.transpose()) * *weight;
+                                    let active_weight = if self.use_angle_weighted_svd { *weight } else { 1.0 };
+                                    b += (t * i.transpose()) * active_weight;
                                 }
 
                                 let svd = b.svd(true, true);
@@ -514,7 +482,8 @@ impl ImuTrait for Bno085Imu {
                                             align.calibration_updates_since_save += 1;
 
                                             debug!(
-                                                "Refined 3D mount via angle-weighted SVD. Pool: {} Updates since save: {}",
+                                                "Refined 3D mount via {} SVD. Pool: {} Updates since save: {}",
+                                                if self.use_angle_weighted_svd { "angle-weighted" } else { "standard" },
                                                 align.calibration_axes.len(),
                                                 align.calibration_updates_since_save
                                             );
@@ -551,7 +520,7 @@ impl ImuTrait for Bno085Imu {
                     let final_error_quat = final_expected.inverse() * new_true_q;
                     let final_error_angle = final_error_quat.angle().to_degrees();
 
-                    // Only update the rolling average and print the log if this is the first plate solve
+                    // Only update the rolling average and print the log if this is the first plate solve 
                     // after a larger distinct physical movement (> 5.0 degrees)
                     if angle_moved > 5.0 {
                         // Update rolling average for error tracking (max 20 entries)
@@ -563,7 +532,7 @@ impl ImuTrait for Bno085Imu {
                             / (align.error_history.len() as f64);
 
                         info!(
-                            "Calibration metric evaluated. Expected vs True error: {:.3}° (Rolling Avg: {:.3}°)",
+                            "Expected vs True error: {:.3}° (Rolling Avg: {:.3}°)",
                             final_error_angle, avg_error
                         );
                     }
