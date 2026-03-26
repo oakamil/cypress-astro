@@ -50,7 +50,7 @@ fn main() {
                 Arc::new(Mutex::new(solver));
 
             println!("Initializing BNO085 IMU over I2C...");
-            let imu: Option<Arc<Mutex<dyn ImuTrait + Send>>> = match Bno085Imu::start(rotation_mode, false)
+            let imu: Option<Arc<Mutex<dyn ImuTrait + Send>>> = match Bno085Imu::start(rotation_mode)
             {
                 Ok(imu) => {
                     println!("IMU successfully initialized!");

@@ -51,12 +51,14 @@ If an IMU is available `cypress-server` will utilize the IMU in standard 9-axis 
 $HOME/cedar/bin/cypress-server -i 2
 ```
 
-| Mode | Description |
-| ---| --- |
-| 1 | Standard 9-axis rotation vector |
-| 2 | Game rotation vector (6-axis, magnetometer is ignored) |
-| 3 | AR/VR stabilized 9-axis rotation vector |
-| 4 | AR/VR stabilized game rotation vector (6-axis) |
+| Mode | Description | Measured Error |
+| ---| --- | --- |
+| 1 | Standard 9-axis rotation vector | 2.3 deg |
+| 2 | Game rotation vector (6-axis, magnetometer is ignored) | 3.5 deg |
+| 3 | AR/VR stabilized 9-axis rotation vector | 2.4 deg |
+| 4 | AR/VR stabilized game rotation vector (6-axis) | 3.6 deg |
+
+Standard mode is recommended unless magnetic interference is present in the environment.
 
 ## License
 

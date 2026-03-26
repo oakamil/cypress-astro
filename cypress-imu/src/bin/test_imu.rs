@@ -44,7 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Initializing BNO085 over I2C...");
 
     // Pass the parsed rotation mode instead of the hardcoded boolean
-    let imu = Bno085Imu::start(rotation_mode, false)?;
+    let imu = Bno085Imu::start(rotation_mode)?;
 
     println!("Waiting for sensor fusion algorithm to converge (3 seconds)...");
 
