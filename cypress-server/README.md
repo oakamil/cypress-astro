@@ -58,7 +58,7 @@ $HOME/cedar/bin/cypress-server -i 2
 | 3 | AR/VR stabilized 9-axis rotation vector | 2.4 deg |
 | 4 | AR/VR stabilized game rotation vector (6-axis) | 3.6 deg |
 
-Standard mode is recommended unless magnetic interference is present in the environment.
+Standard mode is recommended unless magnetic interference is present in the environment. The measured error above is from ~15 short to medium slews after calibration.
 
 ## License
 

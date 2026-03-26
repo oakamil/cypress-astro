@@ -95,8 +95,9 @@ impl Default for AlignmentState {
 pub struct Bno085Imu {
     state_rx: watch::Receiver<Option<ImuUpdate>>,
     alignment: Arc<RwLock<AlignmentState>>,
-    // History buffer now stores TrackerState to enable State-Bracketed Extraction
-    history: Arc<Mutex<VecDeque<(SystemTime, UnitQuaternion<f64>, TrackerState)>>>,
+    // History buffer now stores TrackerState to enable State-Bracketed Extraction,
+    // and a per-axis Vector3<f64> to track rotational velocity for ZeroBias calculation.
+    history: Arc<Mutex<VecDeque<(SystemTime, UnitQuaternion<f64>, TrackerState, Vector3<f64>)>>>,
 }
 
 impl Bno085Imu {
@@ -255,6 +256,14 @@ impl Bno085Imu {
                             let angle_rad = q_diff.angle();
                             let gyro_mag = angle_rad / dt.max(0.001);
 
+                            // Calculate per-axis degrees/sec for ZeroBias tracking
+                            let gyro_vec_rad = if let Some(axis) = q_diff.axis() {
+                                axis.into_inner() * gyro_mag
+                            } else {
+                                Vector3::zeros()
+                            };
+                            let gyro_vec_deg = gyro_vec_rad * (180.0 / std::f64::consts::PI);
+
                             let is_warming_up =
                                 boot_time.elapsed().unwrap_or_default() < warm_up_duration;
 
@@ -288,8 +297,8 @@ impl Bno085Imu {
 
                             {
                                 let mut hist = history_clone.lock().unwrap();
-                                // We now store the state in the history array to support state-bracketed extraction
-                                hist.push_back((now, current_quat, tracker_state));
+                                // Push the new gyro_vec_deg into the history buffer
+                                hist.push_back((now, current_quat, tracker_state, gyro_vec_deg));
                                 // Strict 300 record cap (3 seconds at 100Hz)
                                 if hist.len() > 300 {
                                     hist.pop_front();
@@ -340,6 +349,33 @@ impl Bno085Imu {
         })
     }
 
+    // Helper to identify the closest primary IMU axis to a given camera vector
+    fn get_closest_imu_axis(v: &Vector3<f64>) -> (String, f64) {
+        let mut max_val = 0.0;
+        let mut max_idx = 0;
+        let mut sign = "+";
+
+        for i in 0..3 {
+            if v[i].abs() > max_val {
+                max_val = v[i].abs();
+                max_idx = i;
+                sign = if v[i] >= 0.0 { "+" } else { "-" };
+            }
+        }
+
+        let axis_name = match max_idx {
+            0 => "X",
+            1 => "Y",
+            _ => "Z",
+        };
+
+        let mut pure_axis = Vector3::zeros();
+        pure_axis[max_idx] = if sign == "+" { 1.0 } else { -1.0 };
+
+        let misalignment = v.angle(&pure_axis).to_degrees();
+        (format!("{}{}", sign, axis_name), misalignment)
+    }
+
     // Retained for real-time UI queries. Finds the literal closest timestamp without bracketing logic.
     fn get_historical_quat(&self, target_time: &SystemTime) -> Option<UnitQuaternion<f64>> {
         let hist = self.history.lock().unwrap();
@@ -363,7 +399,7 @@ impl Bno085Imu {
         let mut closest_quat = hist[0].1;
         let mut min_diff = Duration::from_secs(u64::MAX);
 
-        for (time, quat, _) in hist.iter() {
+        for (time, quat, _, _) in hist.iter() {
             let diff = if time > target_time {
                 time.duration_since(*target_time).unwrap_or_default()
             } else {
@@ -406,7 +442,7 @@ impl Bno085Imu {
         let mut closest_idx = 0;
         let mut min_diff = Duration::from_secs(u64::MAX);
 
-        for (i, (time, _, _)) in hist.iter().enumerate() {
+        for (i, (time, _, _, _)) in hist.iter().enumerate() {
             let diff = if time > target_time {
                 time.duration_since(*target_time).unwrap_or_default()
             } else {
@@ -706,21 +742,36 @@ impl ImuTrait for Bno085Imu {
                         );
                     }
 
+                    // Assume standard optical camera axes: View = +Z, Up = +Y.
+                    // Rotate the camera axes into the IMU's reference frame using our calibration matrix.
+                    let cam_view_in_imu = align.mount_q.conjugate() * Vector3::new(0.0, 0.0, 1.0);
+                    let cam_up_in_imu = align.mount_q.conjugate() * Vector3::new(0.0, 1.0, 0.0);
+
+                    let (view_axis, view_misalign) = Self::get_closest_imu_axis(&cam_view_in_imu);
+                    let (up_axis, up_misalign) = Self::get_closest_imu_axis(&cam_up_in_imu);
+
                     align.transform_calibration = Some(TransformCalibration {
-                        transform_error_fraction: (final_error_angle / 100.0).clamp(0.0, 1.0),
-                        camera_view_gyro_axis: "+Z".to_string(),
-                        camera_view_misalignment: final_error_angle,
-                        camera_up_gyro_axis: "+Y".to_string(),
-                        camera_up_misalignment: final_error_angle,
+                        transform_error_fraction: final_error_angle / angle_moved.max(0.001),
+                        camera_view_gyro_axis: view_axis,
+                        camera_view_misalignment: view_misalign,
+                        camera_up_gyro_axis: up_axis,
+                        camera_up_misalignment: up_misalign,
                     });
                 } else {
                     info!("Initial plate-solve anchor locked in.");
+
+                    let cam_view_in_imu = align.mount_q.conjugate() * Vector3::new(0.0, 0.0, 1.0);
+                    let cam_up_in_imu = align.mount_q.conjugate() * Vector3::new(0.0, 1.0, 0.0);
+
+                    let (view_axis, view_misalign) = Self::get_closest_imu_axis(&cam_view_in_imu);
+                    let (up_axis, up_misalign) = Self::get_closest_imu_axis(&cam_up_in_imu);
+
                     align.transform_calibration = Some(TransformCalibration {
                         transform_error_fraction: 0.0,
-                        camera_view_gyro_axis: "+Z".to_string(),
-                        camera_view_misalignment: 0.0,
-                        camera_up_gyro_axis: "+Y".to_string(),
-                        camera_up_misalignment: 0.0,
+                        camera_view_gyro_axis: view_axis,
+                        camera_view_misalignment: view_misalign,
+                        camera_up_gyro_axis: up_axis,
+                        camera_up_misalignment: up_misalign,
                     });
                 }
 
@@ -811,20 +862,42 @@ impl ImuTrait for Bno085Imu {
 
     async fn get_calibration(&self) -> (Option<ZeroBias>, Option<TransformCalibration>) {
         let align = self.alignment.read().await.clone();
-        let state = self
-            .state_rx
-            .borrow()
-            .map(|s| s.tracker_state)
-            .unwrap_or(TrackerState::Lost);
-        let bias = if state != TrackerState::Lost {
+
+        // Calculate dynamic zero bias from the most recent contiguous motionless frames
+        let hist = self.history.lock().unwrap();
+        let mut bias_sum = Vector3::zeros();
+        let mut count = 0;
+
+        // Scan backwards through history up to 50 frames (0.5 seconds at 100Hz)
+        for (_, _, state, gyro_deg) in hist.iter().rev() {
+            if *state == TrackerState::Motionless {
+                bias_sum += *gyro_deg;
+                count += 1;
+                if count >= 50 {
+                    break;
+                }
+            } else {
+                // Stop at the first sign of movement to ensure we only measure pure rest data
+                break;
+            }
+        }
+
+        let bias = if count > 0 {
+            let avg = bias_sum / (count as f64);
+            Some(ZeroBias {
+                x: avg.x,
+                y: avg.y,
+                z: avg.z,
+            })
+        } else {
+            // If currently moving or buffer is empty, default to zero
             Some(ZeroBias {
                 x: 0.0,
                 y: 0.0,
                 z: 0.0,
             })
-        } else {
-            None
         };
+
         (bias, align.transform_calibration)
     }
 
