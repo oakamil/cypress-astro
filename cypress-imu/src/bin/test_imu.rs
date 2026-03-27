@@ -5,7 +5,10 @@ use std::time::{Duration, SystemTime};
 use tokio::time;
 
 use cedar_elements::imu_trait::{HorizonCoordinates, ImuTrait, TrackerState};
-use cypress_imu::bno085::{Bno085Imu, ImuRotationMode};
+use cypress_imu::{
+    bno085::{Bno085Imu, ImuRotationMode},
+    cedar_bno085::CedarBno085Wrapper,
+};
 use env_logger;
 use pico_args::Arguments;
 
@@ -44,7 +47,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Initializing BNO085 over I2C...");
 
     // Pass the parsed rotation mode instead of the hardcoded boolean
-    let imu = Bno085Imu::start(rotation_mode)?;
+    let engine = Bno085Imu::start(rotation_mode)?;
+    let imu = CedarBno085Wrapper { engine };
 
     println!("Waiting for sensor fusion algorithm to converge (3 seconds)...");
 

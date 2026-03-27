@@ -5,12 +5,6 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
-use async_trait::async_trait;
-use canonical_error::{CanonicalError, CanonicalErrorCode};
-use cedar_elements::imu_trait::{
-    AccelData, GyroData, HorizonCoordinates, ImuState, ImuTrait, TrackerState,
-    TransformCalibration, ZeroBias,
-};
 use log::{debug, error, info, warn};
 use nalgebra::{Matrix3, Rotation3, UnitQuaternion, Vector3};
 use tokio::sync::{RwLock, watch};
@@ -36,6 +30,36 @@ pub enum ImuRotationMode {
     ArvrStabilizedGame,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum MotionState {
+    Initializing,
+    Moving,
+    Stable,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct RawSensorData {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MountCoordinates {
+    pub roll: f64,
+    pub pitch: f64,
+    pub yaw: f64,
+}
+
+#[derive(Clone, Debug)]
+pub struct TransformMetrics {
+    pub transform_error_fraction: f64,
+    pub camera_view_gyro_axis: String,
+    pub camera_view_misalignment: f64,
+    pub camera_up_gyro_axis: String,
+    pub camera_up_misalignment: f64,
+}
+
 // Helper to strictly enforce saving to the program's launch directory
 fn get_calibration_file_path() -> std::path::PathBuf {
     std::env::current_dir()
@@ -44,26 +68,26 @@ fn get_calibration_file_path() -> std::path::PathBuf {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct ImuUpdate {
-    timestamp: SystemTime,
-    accel: AccelData,
-    gyro: GyroData,
-    quaternion: UnitQuaternion<f64>,
-    jerk_magnitude: f64,
-    angular_velocity: f64,
-    tracker_state: TrackerState,
+pub struct ImuUpdate {
+    pub timestamp: SystemTime,
+    pub accel: RawSensorData,
+    pub gyro: RawSensorData,
+    pub quaternion: UnitQuaternion<f64>,
+    pub jerk_magnitude: f64,
+    pub angular_velocity: f64,
+    pub motion_state: MotionState,
 }
 
 #[derive(Clone)]
 struct AlignmentState {
     // The known true camera pointing from the most recent successful plate solve.
-    last_camera_position: Option<HorizonCoordinates>,
+    last_camera_position: Option<MountCoordinates>,
     // The IMU's raw quaternion recorded at the exact time the plate solve image was taken.
     imu_anchor_state: Option<UnitQuaternion<f64>>,
     // The dynamically calculated physical mounting rotation of the IMU relative to the camera.
     mount_q: UnitQuaternion<f64>,
     // The calculated calibration health between the camera and IMU.
-    transform_calibration: Option<TransformCalibration>,
+    transform_metrics: Option<TransformMetrics>,
     // Store distinct rotational axes to continuously refine the 3D calibration
     calibration_axes: Vec<(Vector3<f64>, Vector3<f64>)>,
     // Flag to track if the current mount_q was loaded from disk or previously locked
@@ -82,7 +106,7 @@ impl Default for AlignmentState {
             last_camera_position: None,
             imu_anchor_state: None,
             mount_q: UnitQuaternion::identity(),
-            transform_calibration: None,
+            transform_metrics: None,
             calibration_axes: Vec::new(),
             loaded_from_disk: false,
             best_calibration_confidence: 0.0,
@@ -95,9 +119,9 @@ impl Default for AlignmentState {
 pub struct Bno085Imu {
     state_rx: watch::Receiver<Option<ImuUpdate>>,
     alignment: Arc<RwLock<AlignmentState>>,
-    // History buffer now stores TrackerState to enable State-Bracketed Extraction,
-    // and a per-axis Vector3<f64> to track rotational velocity for ZeroBias calculation.
-    history: Arc<Mutex<VecDeque<(SystemTime, UnitQuaternion<f64>, TrackerState, Vector3<f64>)>>>,
+    // History buffer stores MotionState to enable State-Bracketed Extraction,
+    // and a per-axis Vector3<f64> to track rotational velocity for bias calculation.
+    history: Arc<Mutex<VecDeque<(SystemTime, UnitQuaternion<f64>, MotionState, Vector3<f64>)>>>,
 }
 
 impl Bno085Imu {
@@ -267,22 +291,22 @@ impl Bno085Imu {
                             let is_warming_up =
                                 boot_time.elapsed().unwrap_or_default() < warm_up_duration;
 
-                            let tracker_state = if is_warming_up {
-                                TrackerState::Lost
+                            let motion_state = if is_warming_up {
+                                MotionState::Initializing
                             } else if gyro_mag > 0.05 {
-                                TrackerState::Moving
+                                MotionState::Moving
                             } else {
-                                TrackerState::Motionless
+                                MotionState::Stable
                             };
 
                             let update = ImuUpdate {
                                 timestamp: now,
-                                accel: AccelData {
+                                accel: RawSensorData {
                                     x: 0.0,
                                     y: 0.0,
                                     z: 0.0,
                                 },
-                                gyro: GyroData {
+                                gyro: RawSensorData {
                                     x: 0.0,
                                     y: 0.0,
                                     z: 0.0,
@@ -290,7 +314,7 @@ impl Bno085Imu {
                                 quaternion: current_quat,
                                 jerk_magnitude: 0.0,
                                 angular_velocity: gyro_mag,
-                                tracker_state,
+                                motion_state,
                             };
 
                             let _ = state_tx.send(Some(update));
@@ -298,7 +322,7 @@ impl Bno085Imu {
                             {
                                 let mut hist = history_clone.lock().unwrap();
                                 // Push the new gyro_vec_deg into the history buffer
-                                hist.push_back((now, current_quat, tracker_state, gyro_vec_deg));
+                                hist.push_back((now, current_quat, motion_state, gyro_vec_deg));
                                 // Strict 300 record cap (3 seconds at 100Hz)
                                 if hist.len() > 300 {
                                     hist.pop_front();
@@ -306,7 +330,7 @@ impl Bno085Imu {
                             }
 
                             if last_debug_print.elapsed() >= Duration::from_secs(1) {
-                                debug!("Alive @ 100Hz. TrackerState: {:?}", tracker_state);
+                                debug!("Alive @ 100Hz. MotionState: {:?}", motion_state);
                                 last_debug_print = Instant::now();
                             }
 
@@ -462,19 +486,19 @@ impl Bno085Imu {
         // --- STATE-BRACKETED EXTRACTION WITH DECELERATION SETTLING ---
         let mut selected_idx = closest_idx;
 
-        if hist[selected_idx].2 == TrackerState::Moving {
-            // Target landed during a slew. Scan forward (newer frames) to find the first Motionless frame.
+        if hist[selected_idx].2 == MotionState::Moving {
+            // Target landed during a slew. Scan forward (newer frames) to find the first Stable frame.
             for i in selected_idx..hist.len() {
-                if hist[i].2 == TrackerState::Motionless {
+                if hist[i].2 == MotionState::Stable {
                     selected_idx = i + SETTLE_FRAMES;
                     break;
                 }
             }
         } else {
             // Target landed during stillness. Scan backward (older frames) to find the exact moment
-            // the mount transitioned from Moving to Motionless, isolating the true end of the slew.
+            // the mount transitioned from Moving to Stable, isolating the true end of the slew.
             for i in (0..selected_idx).rev() {
-                if hist[i].2 == TrackerState::Moving {
+                if hist[i].2 == MotionState::Moving {
                     selected_idx = (i + 1) + SETTLE_FRAMES;
                     break;
                 }
@@ -490,20 +514,20 @@ impl Bno085Imu {
         Some(hist[selected_idx].1)
     }
 
-    fn horizon_to_quat(coord: &HorizonCoordinates) -> UnitQuaternion<f64> {
+    fn mount_to_quat(coord: &MountCoordinates) -> UnitQuaternion<f64> {
         UnitQuaternion::from_euler_angles(
-            coord.zenith_roll_angle.to_radians(),
-            coord.altitude.to_radians(),
-            coord.azimuth.to_radians(),
+            coord.roll.to_radians(),
+            coord.pitch.to_radians(),
+            coord.yaw.to_radians(),
         )
     }
 
-    fn quat_to_horizon(quat: &UnitQuaternion<f64>) -> HorizonCoordinates {
+    fn quat_to_mount(quat: &UnitQuaternion<f64>) -> MountCoordinates {
         let (roll, pitch, yaw) = quat.euler_angles();
-        HorizonCoordinates {
-            zenith_roll_angle: roll.to_degrees().rem_euclid(360.0),
-            altitude: pitch.to_degrees(),
-            azimuth: yaw.to_degrees().rem_euclid(360.0),
+        MountCoordinates {
+            roll: roll.to_degrees().rem_euclid(360.0),
+            pitch: pitch.to_degrees(),
+            yaw: yaw.to_degrees().rem_euclid(360.0),
         }
     }
 
@@ -525,16 +549,9 @@ impl Bno085Imu {
             }
         });
     }
-}
 
-#[async_trait]
-impl ImuTrait for Bno085Imu {
-    async fn report_true_camera_pointing(
-        &self,
-        camera_pointing: &HorizonCoordinates,
-        timestamp: &SystemTime,
-    ) {
-        debug!("report_true_camera_pointing called!");
+    pub async fn update_anchor(&self, camera_pointing: &MountCoordinates, timestamp: &SystemTime) {
+        debug!("update_anchor called!");
 
         let imu_state = *self.state_rx.borrow();
 
@@ -544,12 +561,12 @@ impl ImuTrait for Bno085Imu {
 
             if let Some(hist_q) = historical_imu_q {
                 let mut align = self.alignment.write().await;
-                let new_true_q = Self::horizon_to_quat(camera_pointing);
+                let new_true_q = Self::mount_to_quat(camera_pointing);
 
-                if let (Some(old_horizon), Some(old_quat)) =
+                if let (Some(old_mount), Some(old_quat)) =
                     (align.last_camera_position, align.imu_anchor_state)
                 {
-                    let old_true_q = Self::horizon_to_quat(&old_horizon);
+                    let old_true_q = Self::mount_to_quat(&old_mount);
 
                     // Continuous SVD calibration (Wahba's Problem)
                     let q_true_delta = old_true_q.conjugate() * new_true_q;
@@ -750,7 +767,7 @@ impl ImuTrait for Bno085Imu {
                     let (view_axis, view_misalign) = Self::get_closest_imu_axis(&cam_view_in_imu);
                     let (up_axis, up_misalign) = Self::get_closest_imu_axis(&cam_up_in_imu);
 
-                    align.transform_calibration = Some(TransformCalibration {
+                    align.transform_metrics = Some(TransformMetrics {
                         transform_error_fraction: final_error_angle / angle_moved.max(0.001),
                         camera_view_gyro_axis: view_axis,
                         camera_view_misalignment: view_misalign,
@@ -766,7 +783,7 @@ impl ImuTrait for Bno085Imu {
                     let (view_axis, view_misalign) = Self::get_closest_imu_axis(&cam_view_in_imu);
                     let (up_axis, up_misalign) = Self::get_closest_imu_axis(&cam_up_in_imu);
 
-                    align.transform_calibration = Some(TransformCalibration {
+                    align.transform_metrics = Some(TransformMetrics {
                         transform_error_fraction: 0.0,
                         camera_view_gyro_axis: view_axis,
                         camera_view_misalignment: view_misalign,
@@ -782,13 +799,10 @@ impl ImuTrait for Bno085Imu {
         }
     }
 
-    // Ignored. Dead reckoning continues based on the last known anchors.
-    async fn report_camera_pointing_lost(&self, _timestamp: &SystemTime) {}
-
     // Clears the active session anchors and telemetry, but strictly preserves
     // the SVD calibration pool, mount_q, and disk file to support file-less recalibration and
     // uninterrupted EQ tracking.
-    async fn reset(&self) {
+    pub async fn reset_anchors(&self) {
         debug!("reset called. Clearing anchors but preserving calibration matrix.");
         let mut align = self.alignment.write().await;
 
@@ -797,15 +811,15 @@ impl ImuTrait for Bno085Imu {
         align.imu_anchor_state = None;
 
         // Clear session-specific metrics, but preserve SVD pool, mount_q, and disk status
-        align.transform_calibration = None;
+        align.transform_metrics = None;
         align.error_history.clear();
     }
 
     // IMU-derived estimate of camera pointing as of the given time.
-    async fn get_estimated_camera_pointing(
+    pub async fn get_estimated_pointing(
         &self,
         timestamp: &SystemTime,
-    ) -> Result<HorizonCoordinates, CanonicalError> {
+    ) -> Result<MountCoordinates, &'static str> {
         let align = self.alignment.read().await.clone();
 
         if let (Some(anchor_horiz), Some(anchor_quat)) =
@@ -832,48 +846,41 @@ impl ImuTrait for Bno085Imu {
             let cam_local_delta = align.mount_q * imu_local_delta * align.mount_q.conjugate();
 
             // 4. Convert our known optical anchor (from the last successful plate solve) into a quaternion
-            let anchor_true_q = Self::horizon_to_quat(&anchor_horiz);
+            let anchor_true_q = Self::mount_to_quat(&anchor_horiz);
 
             // 5. Apply the correctly transformed movement delta directly to the true sky anchor
             let est_q = anchor_true_q * cam_local_delta;
 
-            let coords = Self::quat_to_horizon(&est_q);
+            let coords = Self::quat_to_mount(&est_q);
 
             debug!(
                 "Engine queried IMU pointing. Returning Alt: {:.2}°, Az: {:.2}°",
-                coords.altitude, coords.azimuth
+                coords.pitch, coords.yaw
             );
 
             Ok(coords)
         } else {
-            Err(CanonicalError {
-                code: CanonicalErrorCode::FailedPrecondition,
-                message: "No plate solve anchor established yet.".to_string(),
-            })
+            Err("No plate solve anchor established yet.")
         }
     }
 
-    async fn get_tracker_state(&self) -> TrackerState {
+    pub fn get_motion_state(&self) -> MotionState {
         self.state_rx
             .borrow()
-            .map(|s| s.tracker_state)
-            .unwrap_or(TrackerState::Lost)
+            .map(|s| s.motion_state)
+            .unwrap_or(MotionState::Initializing)
     }
 
-    async fn get_calibration(&self) -> (Option<ZeroBias>, Option<TransformCalibration>) {
-        let align = self.alignment.read().await.clone();
-
-        // Calculate dynamic zero bias from the most recent contiguous motionless frames
+    pub fn get_recent_stable_gyro_bias(&self, max_frames: usize) -> Option<Vector3<f64>> {
         let hist = self.history.lock().unwrap();
         let mut bias_sum = Vector3::zeros();
         let mut count = 0;
 
-        // Scan backwards through history up to 50 frames (0.5 seconds at 100Hz)
         for (_, _, state, gyro_deg) in hist.iter().rev() {
-            if *state == TrackerState::Motionless {
+            if *state == MotionState::Stable {
                 bias_sum += *gyro_deg;
                 count += 1;
-                if count >= 50 {
+                if count >= max_frames {
                     break;
                 }
             } else {
@@ -882,66 +889,18 @@ impl ImuTrait for Bno085Imu {
             }
         }
 
-        let bias = if count > 0 {
-            let avg = bias_sum / (count as f64);
-            Some(ZeroBias {
-                x: avg.x,
-                y: avg.y,
-                z: avg.z,
-            })
+        if count > 0 {
+            Some(bias_sum / (count as f64))
         } else {
-            // If currently moving or buffer is empty, default to zero
-            Some(ZeroBias {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            })
-        };
-
-        (bias, align.transform_calibration)
-    }
-
-    async fn get_state(&self) -> Result<(ImuState, SystemTime), CanonicalError> {
-        if let Some(state) = *self.state_rx.borrow() {
-            Ok((
-                ImuState {
-                    timestamp: state.timestamp,
-                    accel: state.accel,
-                    gyro: state.gyro,
-                },
-                state.timestamp,
-            ))
-        } else {
-            Err(CanonicalError {
-                code: CanonicalErrorCode::Unavailable,
-                message: "IMU Not Ready".into(),
-            })
+            None
         }
     }
 
-    async fn get_jerk_magnitude(&self) -> Result<(f64, SystemTime), CanonicalError> {
-        if let Some(state) = *self.state_rx.borrow() {
-            Ok((state.jerk_magnitude, state.timestamp))
-        } else {
-            Err(CanonicalError {
-                code: CanonicalErrorCode::Unavailable,
-                message: "IMU Not Ready".into(),
-            })
-        }
+    pub async fn get_calibration_metrics(&self) -> Option<TransformMetrics> {
+        self.alignment.read().await.transform_metrics.clone()
     }
 
-    async fn get_angular_velocity_magnitude(&self) -> Result<(f64, SystemTime), CanonicalError> {
-        if let Some(state) = *self.state_rx.borrow() {
-            Ok((state.angular_velocity, state.timestamp))
-        } else {
-            Err(CanonicalError {
-                code: CanonicalErrorCode::Unavailable,
-                message: "IMU Not Ready".into(),
-            })
-        }
-    }
-
-    fn get_model(&self) -> String {
-        "BNO085".to_string()
+    pub fn get_latest_state(&self) -> Option<ImuUpdate> {
+        *self.state_rx.borrow()
     }
 }

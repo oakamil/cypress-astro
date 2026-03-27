@@ -1,6 +1,9 @@
 use std::{path::Path, sync::Arc};
 
-use cypress_imu::bno085::{Bno085Imu, ImuRotationMode};
+use cypress_imu::{
+    bno085::{Bno085Imu, ImuRotationMode},
+    cedar_bno085::CedarBno085Wrapper,
+};
 use cypress_solver::Tetra3Solver;
 use pico_args::Arguments;
 use tetra3::Solver;
@@ -54,7 +57,8 @@ fn main() {
             {
                 Ok(imu) => {
                     println!("IMU successfully initialized!");
-                    Some(Arc::new(Mutex::new(imu)))
+                    let cedar_imu = CedarBno085Wrapper { engine: imu };
+                    Some(Arc::new(Mutex::new(cedar_imu)))
                 }
                 Err(_) => {
                     println!("Could not start BNO085 IMU");
