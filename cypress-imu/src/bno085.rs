@@ -3,7 +3,7 @@
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 
 use log::{debug, error, info, warn};
 use nalgebra::{Matrix3, Rotation3, UnitQuaternion, Vector3};
@@ -232,7 +232,6 @@ impl Bno085Imu {
             let boot_time = SystemTime::now();
             let warm_up_duration = Duration::from_secs(3);
 
-            let mut last_debug_print = Instant::now();
             let mut last_msg_time = SystemTime::now(); // Hardware watchdog tracker
 
             // Main hardware polling loop. Extracts messages from the I2C bus as fast as they arrive.
@@ -329,11 +328,6 @@ impl Bno085Imu {
                                 }
                             }
 
-                            if last_debug_print.elapsed() >= Duration::from_secs(1) {
-                                debug!("Alive @ 100Hz. MotionState: {:?}", motion_state);
-                                last_debug_print = Instant::now();
-                            }
-
                             prev_quat = current_quat;
                             prev_time = now;
                         }
@@ -400,7 +394,7 @@ impl Bno085Imu {
         (format!("{}{}", sign, axis_name), misalignment)
     }
 
-    // Retained for real-time UI queries. Finds the literal closest timestamp without bracketing logic.
+    // For real-time UI queries. Finds the literal closest timestamp without bracketing logic.
     fn get_historical_quat(&self, target_time: &SystemTime) -> Option<UnitQuaternion<f64>> {
         let hist = self.history.lock().unwrap();
         if hist.is_empty() {
@@ -551,8 +545,6 @@ impl Bno085Imu {
     }
 
     pub async fn update_anchor(&self, camera_pointing: &MountCoordinates, timestamp: &SystemTime) {
-        debug!("update_anchor called!");
-
         let imu_state = *self.state_rx.borrow();
 
         if imu_state.is_some() {
@@ -711,11 +703,6 @@ impl Bno085Imu {
                                         } else {
                                             // Coasting Phase. The active hardware is identical, and the new pool is flatter than our historical best.
                                             // Ignore the SVD calculation to protect the High Water Mark matrix.
-                                            debug!(
-                                                "SVD pool confidence ({:.1}%) is below our High Water Mark ({:.1}%). Coasting on saved matrix.",
-                                                new_pool_confidence * 100.0,
-                                                align.best_calibration_confidence * 100.0
-                                            );
                                         }
                                     } else {
                                         warn!("SVD generated NaNs. Keeping previous safe mount_q.");
@@ -751,10 +738,35 @@ impl Bno085Imu {
                         let avg_error: f64 = align.error_history.iter().sum::<f64>()
                             / (align.error_history.len() as f64);
 
-                        debug!(
-                            "Expected vs True error: {:.3}° (Rolling Avg: {:.3}°) | Best Cal Confidence: {:.1}%",
+                        // --- ALT/AZ ERROR COMPONENT LOGGING ---
+                        let expected_coords = Self::quat_to_mount(&final_expected);
+                        let true_coords = Self::quat_to_mount(&new_true_q);
+
+                        let alt_error = true_coords.pitch - expected_coords.pitch;
+
+                        let mut az_error = true_coords.yaw - expected_coords.yaw;
+                        if az_error > 180.0 {
+                            az_error -= 360.0;
+                        }
+                        if az_error < -180.0 {
+                            az_error += 360.0;
+                        }
+
+                        let mut roll_error = true_coords.roll - expected_coords.roll;
+                        if roll_error > 180.0 {
+                            roll_error -= 360.0;
+                        }
+                        if roll_error < -180.0 {
+                            roll_error += 360.0;
+                        }
+
+                        info!(
+                            "Expected vs True error: {:.3}° (Rolling Avg: {:.3}°) | Alt Err: {:.3}°, Az Err: {:.3}°, Roll Err: {:.3}° | Confidence: {:.1}%",
                             final_error_angle,
                             avg_error,
+                            alt_error,
+                            az_error,
+                            roll_error,
                             align.best_calibration_confidence * 100.0
                         );
                     }
@@ -851,14 +863,7 @@ impl Bno085Imu {
             // 5. Apply the correctly transformed movement delta directly to the true sky anchor
             let est_q = anchor_true_q * cam_local_delta;
 
-            let coords = Self::quat_to_mount(&est_q);
-
-            debug!(
-                "Engine queried IMU pointing. Returning Alt: {:.2}°, Az: {:.2}°",
-                coords.pitch, coords.yaw
-            );
-
-            Ok(coords)
+            Ok(Self::quat_to_mount(&est_q))
         } else {
             Err("No plate solve anchor established yet.")
         }
