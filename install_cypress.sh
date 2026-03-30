@@ -79,7 +79,7 @@ sudo mount "${LOOP_DEV}p1" "$BOOT_MOUNT_POINT"
 
 echo
 echo "Adding camera configuration"
-sudo bash -c 'printf "\ndtoverlay=imx290,clock-frequency=74250000\n" >> $BOOT_MOUNT_POINT/config.txt'
+sudo -E bash -c 'printf "dtoverlay=imx290,clock-frequency=74250000\n" >> ${BOOT_MOUNT_POINT}/config.txt'
 
 echo
 echo "Unmounting image"
