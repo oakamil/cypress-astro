@@ -21,8 +21,6 @@ const HARDWARE_ALTERATION_THRESHOLD_DEG: f64 = 10.0;
 // Wait this many frames after physical movement stops to allow the accelerometer's
 // gravity vector to completely level out.
 const SETTLE_FRAMES: usize = 15;
-// Toggle for the Feed-Forward Pitch Compensation logic.
-const ENABLE_ALTITUDE_COMPENSATION: bool = true;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ImuRotationMode {
@@ -100,9 +98,6 @@ struct AlignmentState {
     calibration_updates_since_save: usize,
     // Rolling history of expected vs true error for metric tracking
     error_history: Vec<f64>,
-    // Feed-forward compensation constants for centripetal pitch drop (k = error / velocity^2)
-    pitch_comp_cw: f64,
-    pitch_comp_ccw: f64,
 }
 
 impl Default for AlignmentState {
@@ -117,8 +112,6 @@ impl Default for AlignmentState {
             best_calibration_confidence: 0.0,
             calibration_updates_since_save: 0,
             error_history: Vec::new(),
-            pitch_comp_cw: 0.0,
-            pitch_comp_ccw: 0.0,
         }
     }
 }
@@ -405,31 +398,6 @@ impl Bno085Imu {
 
         let misalignment = v.angle(&pure_axis).to_degrees();
         (format!("{}{}", sign, axis_name), misalignment)
-    }
-
-    // Scans backwards from the specified time to find the maximum yaw velocity during the preceding slew
-    fn get_peak_yaw_velocity_for_slew(&self, target_time: &SystemTime) -> f64 {
-        let hist = self.history.lock().unwrap();
-        let mut peak_yaw: f64 = 0.0;
-        let mut in_slew = false;
-
-        // Iterate backwards from the newest frame to find the slew.
-        for (time, _, state, gyro_deg) in hist.iter().rev() {
-            if time > target_time {
-                continue; // Skip frames that are in the future of our target stop time
-            }
-
-            if *state == MotionState::Moving {
-                in_slew = true;
-                if gyro_deg.z.abs() > peak_yaw.abs() {
-                    peak_yaw = gyro_deg.z;
-                }
-            } else if in_slew && *state == MotionState::Stable {
-                // We found the start of the slew, so we can stop scanning
-                break;
-            }
-        }
-        peak_yaw
     }
 
     // For real-time UI queries. Finds the literal closest timestamp without bracketing logic.
@@ -807,45 +775,6 @@ impl Bno085Imu {
                             roll_error,
                             align.best_calibration_confidence * 100.0
                         );
-
-                        // --- FEED-FORWARD CALIBRATION ---
-                        if ENABLE_ALTITUDE_COMPENSATION {
-                            let peak_yaw_velocity = self.get_peak_yaw_velocity_for_slew(timestamp);
-
-                            // Only calibrate if it was a fast, sustained horizontal slew
-                            if peak_yaw_velocity.abs() > 1.0 {
-                                // Grab the raw IMU frame from the exact moment the slew stopped, BEFORE it settled
-                                if let Some(unhealed_q) = self.get_historical_quat(timestamp) {
-                                    let unhealed_coords = Self::quat_to_mount(&unhealed_q);
-
-                                    // Calculate the isolated pitch drop
-                                    let pitch_drop = true_coords.pitch - unhealed_coords.pitch;
-
-                                    // Calculate the k constant: k = error / w^2
-                                    let velocity_sq = peak_yaw_velocity.powi(2);
-                                    let k_sample = pitch_drop / velocity_sq;
-
-                                    // Blend it into the rolling average based on direction
-                                    if peak_yaw_velocity > 0.0 {
-                                        // Clockwise / East pan
-                                        align.pitch_comp_cw =
-                                            (align.pitch_comp_cw * 0.8) + (k_sample * 0.2);
-                                        debug!(
-                                            "Updated pitch_comp_cw: {:.6} (Sample: {:.6})",
-                                            align.pitch_comp_cw, k_sample
-                                        );
-                                    } else {
-                                        // Counter-Clockwise / West pan
-                                        align.pitch_comp_ccw =
-                                            (align.pitch_comp_ccw * 0.8) + (k_sample * 0.2);
-                                        debug!(
-                                            "Updated pitch_comp_ccw: {:.6} (Sample: {:.6})",
-                                            align.pitch_comp_ccw, k_sample
-                                        );
-                                    }
-                                }
-                            }
-                        }
                     }
 
                     // Assume standard optical camera axes: View = +Z, Up = +Y.
@@ -940,28 +869,7 @@ impl Bno085Imu {
             // 5. Apply the correctly transformed movement delta directly to the true sky anchor
             let est_q = anchor_true_q * cam_local_delta;
 
-            let mut coords = Self::quat_to_mount(&est_q);
-
-            // --- REAL-TIME FEED-FORWARD COMPENSATION ---
-            if ENABLE_ALTITUDE_COMPENSATION {
-                if let Some(live_state) = *self.state_rx.borrow() {
-                    let current_yaw_vel = live_state.gyro.z;
-
-                    if current_yaw_vel.abs() > 0.1 {
-                        let k = if current_yaw_vel > 0.0 {
-                            align.pitch_comp_cw
-                        } else {
-                            align.pitch_comp_ccw
-                        };
-
-                        // Apply opposing compensation: + (k * w^2)
-                        let compensation = k * current_yaw_vel.powi(2);
-                        coords.pitch += compensation;
-                    }
-                }
-            }
-
-            Ok(coords)
+            Ok(Self::quat_to_mount(&est_q))
         } else {
             Err("No plate solve anchor established yet.")
         }
