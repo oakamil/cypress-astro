@@ -701,7 +701,6 @@ dependencies = [
  "libc",
  "libcamera",
  "log",
- "rayon",
  "tokio",
 ]
 

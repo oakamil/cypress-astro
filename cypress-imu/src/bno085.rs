@@ -21,6 +21,8 @@ const HARDWARE_ALTERATION_THRESHOLD_DEG: f64 = 10.0;
 // Wait this many frames after physical movement stops to allow the accelerometer's
 // gravity vector to completely level out.
 const SETTLE_FRAMES: usize = 15;
+// The safe pitch boundary before gimbal lock issues arise during Euler angle fusion.
+const MAX_HYBRID_PITCH_DEG: f64 = 85.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ImuRotationMode {
@@ -28,6 +30,8 @@ pub enum ImuRotationMode {
     Game,
     ArvrStabilized,
     ArvrStabilizedGame,
+    Gyro,
+    GyroHybrid,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -221,6 +225,20 @@ impl Bno085Imu {
                     "Hardware initialized at 100Hz using AR/VR Stabilized Game Rotation Vector (6-axis)."
                 );
             }
+            ImuRotationMode::Gyro => {
+                imu.enable_gyro(report_interval_ms)
+                    .map_err(|e| format!("Failed to enable Calibrated Gyroscope: {:?}", e))?;
+                info!("Hardware initialized at 100Hz using Calibrated Gyroscope.");
+            }
+            ImuRotationMode::GyroHybrid => {
+                imu.enable_rotation_vector(report_interval_ms)
+                    .map_err(|e| format!("Failed to enable Standard rotation: {:?}", e))?;
+                imu.enable_gyro(report_interval_ms)
+                    .map_err(|e| format!("Failed to enable Calibrated Gyroscope: {:?}", e))?;
+                info!(
+                    "Hardware initialized at 100Hz using GyroHybrid Mode (9-axis + Calibrated Gyroscope)."
+                );
+            }
         }
 
         let alignment = Arc::new(RwLock::new(initial_alignment));
@@ -247,96 +265,236 @@ impl Bno085Imu {
                 let msg_count = imu.handle_all_messages(&mut delay, 5);
 
                 if msg_count > 0 {
-                    let quat_result = match rotation_mode {
-                        ImuRotationMode::Standard => imu.rotation_quaternion(),
-                        ImuRotationMode::Game => imu.game_rotation_quaternion(),
-                        ImuRotationMode::ArvrStabilized => {
-                            imu.arvr_stabilized_rotation_quaternion()
-                        }
-                        ImuRotationMode::ArvrStabilizedGame => {
-                            imu.arvr_stabilized_game_rotation_quaternion()
-                        }
+                    let mut current_quat_opt = None;
+                    let mut motion_state_opt = None;
+                    let mut gyro_vec_deg_opt = None;
+                    let mut gyro_mag_opt = None;
+                    let mut gyro_raw = RawSensorData {
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0,
                     };
 
-                    if let Ok(quat) = quat_result {
-                        let mag_sq = quat[0] * quat[0]
-                            + quat[1] * quat[1]
-                            + quat[2] * quat[2]
-                            + quat[3] * quat[3];
+                    let now = SystemTime::now();
+                    let dt = now
+                        .duration_since(prev_time)
+                        .unwrap_or(Duration::from_millis(10)) // Default to 10ms for 100Hz
+                        .as_secs_f64();
 
-                        if mag_sq > 0.1 {
-                            let current_quat =
-                                UnitQuaternion::new_normalize(nalgebra::Quaternion::new(
-                                    quat[3] as f64,
-                                    quat[0] as f64,
-                                    quat[1] as f64,
-                                    quat[2] as f64,
-                                ));
+                    let is_warming_up = boot_time.elapsed().unwrap_or_default() < warm_up_duration;
 
-                            let now = SystemTime::now();
-                            last_msg_time = now; // Kick the watchdog
+                    match rotation_mode {
+                        ImuRotationMode::Gyro => {
+                            if let Ok(gyro_data) = imu.gyro() {
+                                last_msg_time = now; // Kick the watchdog
 
-                            let dt = now
-                                .duration_since(prev_time)
-                                .unwrap_or(Duration::from_millis(10)) // Default to 10ms for 100Hz
-                                .as_secs_f64();
+                                let wx = gyro_data[0] as f64;
+                                let wy = gyro_data[1] as f64;
+                                let wz = gyro_data[2] as f64;
+                                gyro_raw = RawSensorData {
+                                    x: wx,
+                                    y: wy,
+                                    z: wz,
+                                };
 
-                            let q_diff = prev_quat.conjugate() * current_quat;
-                            let angle_rad = q_diff.angle();
-                            let gyro_mag = angle_rad / dt.max(0.001);
+                                let gyro_vec_rad = Vector3::new(wx, wy, wz);
+                                let gyro_mag = gyro_vec_rad.norm();
+                                gyro_mag_opt = Some(gyro_mag);
 
-                            // Calculate per-axis degrees/sec for ZeroBias tracking
-                            let gyro_vec_rad = if let Some(axis) = q_diff.axis() {
-                                axis.into_inner() * gyro_mag
-                            } else {
-                                Vector3::zeros()
-                            };
-                            let gyro_vec_deg = gyro_vec_rad * (180.0 / std::f64::consts::PI);
+                                let delta_q = if gyro_mag > 1e-6 {
+                                    UnitQuaternion::new(gyro_vec_rad * dt)
+                                } else {
+                                    UnitQuaternion::identity()
+                                };
 
-                            let is_warming_up =
-                                boot_time.elapsed().unwrap_or_default() < warm_up_duration;
+                                let current_quat = prev_quat * delta_q;
+                                current_quat_opt = Some(current_quat);
 
-                            let motion_state = if is_warming_up {
-                                MotionState::Initializing
-                            } else if gyro_mag > 0.05 {
-                                MotionState::Moving
-                            } else {
-                                MotionState::Stable
-                            };
+                                gyro_vec_deg_opt =
+                                    Some(gyro_vec_rad * (180.0 / std::f64::consts::PI));
 
-                            let update = ImuUpdate {
-                                timestamp: now,
-                                accel: RawSensorData {
-                                    x: 0.0,
-                                    y: 0.0,
-                                    z: 0.0,
-                                },
-                                gyro: RawSensorData {
-                                    x: 0.0,
-                                    y: 0.0,
-                                    z: 0.0,
-                                },
-                                quaternion: current_quat,
-                                jerk_magnitude: 0.0,
-                                angular_velocity: gyro_mag,
-                                motion_state,
-                            };
-
-                            let _ = state_tx.send(Some(update));
-
+                                motion_state_opt = Some(if is_warming_up {
+                                    MotionState::Initializing
+                                } else if gyro_mag > 0.05 {
+                                    MotionState::Moving
+                                } else {
+                                    MotionState::Stable
+                                });
+                            }
+                        }
+                        ImuRotationMode::GyroHybrid => {
+                            if let (Ok(quat), Ok(gyro_data)) =
+                                (imu.rotation_quaternion(), imu.gyro())
                             {
-                                let mut hist = history_clone.lock().unwrap();
-                                // Push the new gyro_vec_deg into the history buffer
-                                hist.push_back((now, current_quat, motion_state, gyro_vec_deg));
-                                // Strict 300 record cap (3 seconds at 100Hz)
-                                if hist.len() > 300 {
-                                    hist.pop_front();
+                                last_msg_time = now; // Kick the watchdog
+
+                                let mag_sq = quat[0] * quat[0]
+                                    + quat[1] * quat[1]
+                                    + quat[2] * quat[2]
+                                    + quat[3] * quat[3];
+                                if mag_sq > 0.1 {
+                                    let abs_9axis =
+                                        UnitQuaternion::new_normalize(nalgebra::Quaternion::new(
+                                            quat[3] as f64,
+                                            quat[0] as f64,
+                                            quat[1] as f64,
+                                            quat[2] as f64,
+                                        ));
+
+                                    let wx = gyro_data[0] as f64;
+                                    let wy = gyro_data[1] as f64;
+                                    let wz = gyro_data[2] as f64;
+                                    gyro_raw = RawSensorData {
+                                        x: wx,
+                                        y: wy,
+                                        z: wz,
+                                    };
+
+                                    let gyro_vec_rad = Vector3::new(wx, wy, wz);
+                                    let gyro_mag = gyro_vec_rad.norm();
+                                    gyro_mag_opt = Some(gyro_mag);
+
+                                    // Gyro integration
+                                    let delta_q = if gyro_mag > 1e-6 {
+                                        UnitQuaternion::new(gyro_vec_rad * dt)
+                                    } else {
+                                        UnitQuaternion::identity()
+                                    };
+
+                                    // Align prev_quat to absolute frame on first valid pass
+                                    if prev_quat == UnitQuaternion::identity()
+                                        && abs_9axis != UnitQuaternion::identity()
+                                    {
+                                        prev_quat = abs_9axis;
+                                    }
+
+                                    let integrated_gyro_quat = prev_quat * delta_q;
+
+                                    // Fusion step
+                                    let (roll_9, pitch_9, yaw_9) = abs_9axis.euler_angles();
+                                    let (_, pitch_g, _) = integrated_gyro_quat.euler_angles();
+
+                                    if pitch_9.to_degrees().abs() < MAX_HYBRID_PITCH_DEG {
+                                        let hybrid_quat = UnitQuaternion::from_euler_angles(
+                                            roll_9, pitch_g, yaw_9,
+                                        );
+                                        current_quat_opt = Some(hybrid_quat);
+                                    } else {
+                                        // Near zenith, fall back completely to 9-axis to avoid gimbal lock
+                                        current_quat_opt = Some(abs_9axis);
+                                    }
+
+                                    gyro_vec_deg_opt =
+                                        Some(gyro_vec_rad * (180.0 / std::f64::consts::PI));
+
+                                    motion_state_opt = Some(if is_warming_up {
+                                        MotionState::Initializing
+                                    } else if gyro_mag > 0.05 {
+                                        MotionState::Moving
+                                    } else {
+                                        MotionState::Stable
+                                    });
+
+                                    // We need to keep the "prev_quat" updated as integrated_gyro_quat to carry forward the pitch integration
+                                    // But wait, if current_quat is hybrid_quat, prev_quat should be current_quat to be saved below
+                                    // The logic at the end of the loop sets `prev_quat = current_quat`.
+                                    // So we don't need to do it here explicitly.
                                 }
                             }
-
-                            prev_quat = current_quat;
-                            prev_time = now;
                         }
+                        _ => {
+                            let quat_result = match rotation_mode {
+                                ImuRotationMode::Standard => imu.rotation_quaternion(),
+                                ImuRotationMode::Game => imu.game_rotation_quaternion(),
+                                ImuRotationMode::ArvrStabilized => {
+                                    imu.arvr_stabilized_rotation_quaternion()
+                                }
+                                ImuRotationMode::ArvrStabilizedGame => {
+                                    imu.arvr_stabilized_game_rotation_quaternion()
+                                }
+                                _ => unreachable!(),
+                            };
+
+                            if let Ok(quat) = quat_result {
+                                let mag_sq = quat[0] * quat[0]
+                                    + quat[1] * quat[1]
+                                    + quat[2] * quat[2]
+                                    + quat[3] * quat[3];
+                                if mag_sq > 0.1 {
+                                    let current_quat =
+                                        UnitQuaternion::new_normalize(nalgebra::Quaternion::new(
+                                            quat[3] as f64,
+                                            quat[0] as f64,
+                                            quat[1] as f64,
+                                            quat[2] as f64,
+                                        ));
+
+                                    last_msg_time = now; // Kick the watchdog
+
+                                    let q_diff = prev_quat.conjugate() * current_quat;
+                                    let angle_rad = q_diff.angle();
+                                    let gyro_mag = angle_rad / dt.max(0.001);
+                                    gyro_mag_opt = Some(gyro_mag);
+
+                                    let gyro_vec_rad = if let Some(axis) = q_diff.axis() {
+                                        axis.into_inner() * gyro_mag
+                                    } else {
+                                        Vector3::zeros()
+                                    };
+                                    gyro_vec_deg_opt =
+                                        Some(gyro_vec_rad * (180.0 / std::f64::consts::PI));
+
+                                    motion_state_opt = Some(if is_warming_up {
+                                        MotionState::Initializing
+                                    } else if gyro_mag > 0.05 {
+                                        MotionState::Moving
+                                    } else {
+                                        MotionState::Stable
+                                    });
+
+                                    current_quat_opt = Some(current_quat);
+                                }
+                            }
+                        }
+                    }
+
+                    if let (
+                        Some(current_quat),
+                        Some(motion_state),
+                        Some(gyro_vec_deg),
+                        Some(gyro_mag),
+                    ) = (
+                        current_quat_opt,
+                        motion_state_opt,
+                        gyro_vec_deg_opt,
+                        gyro_mag_opt,
+                    ) {
+                        let update = ImuUpdate {
+                            timestamp: now,
+                            accel: RawSensorData {
+                                x: 0.0,
+                                y: 0.0,
+                                z: 0.0,
+                            },
+                            gyro: gyro_raw,
+                            quaternion: current_quat,
+                            jerk_magnitude: 0.0,
+                            angular_velocity: gyro_mag,
+                            motion_state,
+                        };
+
+                        let _ = state_tx.send(Some(update));
+
+                        {
+                            let mut hist = history_clone.lock().unwrap();
+                            hist.push_back((now, current_quat, motion_state, gyro_vec_deg));
+                            if hist.len() > 300 {
+                                hist.pop_front();
+                            }
+                        }
+
+                        prev_quat = current_quat;
+                        prev_time = now;
                     }
                 } else {
                     // Hardware watchdog: The BNO085 occasionally locks up over I2C.
@@ -358,6 +516,13 @@ impl Bno085Imu {
                                 let _ = imu.enable_arvr_stabilized_game_rotation_vector(
                                     report_interval_ms,
                                 );
+                            }
+                            ImuRotationMode::Gyro => {
+                                let _ = imu.enable_gyro(report_interval_ms);
+                            }
+                            ImuRotationMode::GyroHybrid => {
+                                let _ = imu.enable_rotation_vector(report_interval_ms);
+                                let _ = imu.enable_gyro(report_interval_ms);
                             }
                         }
                         last_msg_time = SystemTime::now();

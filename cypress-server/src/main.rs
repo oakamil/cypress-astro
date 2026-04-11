@@ -26,6 +26,8 @@ fn main() {
             // 2: Game Rotation Mode (6-axis, no compass)
             // 3: AR/VR Stabilized Rotation Mode (9-axis, stabilized)
             // 4: AR/VR Stabilized Game Rotation Mode (6-axis, stabilized)
+            // 5: Gyro Mode (pure gyro integration)
+            // 6: GyroHybrid Mode (9-axis Roll/Yaw + Gyro Pitch)
             let mode_val: u8 = pargs
                 .opt_value_from_str(["-i", "--imu-rotation-mode"])
                 .unwrap_or(None)
@@ -36,6 +38,8 @@ fn main() {
                 2 => ImuRotationMode::Game,
                 3 => ImuRotationMode::ArvrStabilized,
                 4 => ImuRotationMode::ArvrStabilizedGame,
+                5 => ImuRotationMode::Gyro,
+                6 => ImuRotationMode::GyroHybrid,
                 _ => {
                     println!(
                         "Invalid IMU rotation mode provided ({}). Defaulting to Standard (1).",
