@@ -370,15 +370,23 @@ impl Bno085Imu {
 
                                     let integrated_gyro_quat = prev_quat * delta_q;
 
-                                    // Fusion step
-                                    let (roll_9, pitch_9, yaw_9) = abs_9axis.euler_angles();
-                                    let (_, pitch_g, _) = integrated_gyro_quat.euler_angles();
+                                    // Transform both to Camera Frame to ensure Euler hybridization
+                                    // occurs on the true Alt/Az/Roll axes defined by SVD calibration.
+                                    let mount_q = alignment_clone.read().await.mount_q;
+                                    let cam_9 = abs_9axis * mount_q.conjugate();
+                                    let cam_g = integrated_gyro_quat * mount_q.conjugate();
+
+                                    // Fusion step in Camera Space
+                                    let (roll_9, pitch_9, yaw_9) = cam_9.euler_angles();
+                                    let (_, pitch_g, _) = cam_g.euler_angles();
 
                                     if pitch_9.to_degrees().abs() < MAX_HYBRID_PITCH_DEG {
-                                        let hybrid_quat = UnitQuaternion::from_euler_angles(
+                                        // Take Altitude (pitch) from gyro integration, and Azimuth/Roll from 9-axis fusion.
+                                        let cam_hybrid = UnitQuaternion::from_euler_angles(
                                             roll_9, pitch_g, yaw_9,
                                         );
-                                        current_quat_opt = Some(hybrid_quat);
+                                        // Transform back to IMU frame for internal state consistency.
+                                        current_quat_opt = Some(cam_hybrid * mount_q);
                                     } else {
                                         // Near zenith, fall back completely to 9-axis to avoid gimbal lock
                                         current_quat_opt = Some(abs_9axis);
@@ -394,11 +402,6 @@ impl Bno085Imu {
                                     } else {
                                         MotionState::Stable
                                     });
-
-                                    // We need to keep the "prev_quat" updated as integrated_gyro_quat to carry forward the pitch integration
-                                    // But wait, if current_quat is hybrid_quat, prev_quat should be current_quat to be saved below
-                                    // The logic at the end of the loop sets `prev_quat = current_quat`.
-                                    // So we don't need to do it here explicitly.
                                 }
                             }
                         }
