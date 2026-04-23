@@ -21,8 +21,6 @@ const HARDWARE_ALTERATION_THRESHOLD_DEG: f64 = 10.0;
 // Wait this many frames after physical movement stops to allow the accelerometer's
 // gravity vector to completely level out.
 const SETTLE_FRAMES: usize = 15;
-// The safe pitch boundary before gimbal lock issues arise during Euler angle fusion.
-const MAX_HYBRID_PITCH_DEG: f64 = 85.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ImuRotationMode {
@@ -242,6 +240,7 @@ impl Bno085Imu {
         }
 
         let alignment = Arc::new(RwLock::new(initial_alignment));
+        let alignment_clone = Arc::clone(&alignment);
 
         // 3 seconds of IMU history (capped at 300 items for 100Hz)
         let history = Arc::new(Mutex::new(VecDeque::with_capacity(300)));
@@ -368,29 +367,31 @@ impl Bno085Imu {
                                         prev_quat = abs_9axis;
                                     }
 
-                                    let integrated_gyro_quat = prev_quat * delta_q;
+                                    // 1. Calculate physical deltas in IMU body frame
+                                    let q_diff_9 = prev_quat.conjugate() * abs_9axis;
+                                    let q_diff_g = delta_q;
 
-                                    // Transform both to Camera Frame to ensure Euler hybridization
-                                    // occurs on the true Alt/Az/Roll axes defined by SVD calibration.
-                                    let mount_q = alignment_clone.read().await.mount_q;
-                                    let cam_9 = abs_9axis * mount_q.conjugate();
-                                    let cam_g = integrated_gyro_quat * mount_q.conjugate();
+                                    // 2. Map deltas to Abstract Camera frame using SVD mount_q
+                                    let align = alignment_clone.blocking_read();
+                                    let mount_q = align.mount_q;
+                                    let cam_diff_9 = mount_q * q_diff_9 * mount_q.conjugate();
+                                    let cam_diff_g = mount_q * q_diff_g * mount_q.conjugate();
 
-                                    // Fusion step in Camera Space
-                                    let (roll_9, pitch_9, yaw_9) = cam_9.euler_angles();
-                                    let (_, pitch_g, _) = cam_g.euler_angles();
+                                    // 3. Extract rotation vectors (x=Roll, y=Altitude, z=Azimuth)
+                                    let vec_9 = cam_diff_9.scaled_axis();
+                                    let vec_g = cam_diff_g.scaled_axis();
 
-                                    if pitch_9.to_degrees().abs() < MAX_HYBRID_PITCH_DEG {
-                                        // Take Altitude (pitch) from gyro integration, and Azimuth/Roll from 9-axis fusion.
-                                        let cam_hybrid = UnitQuaternion::from_euler_angles(
-                                            roll_9, pitch_g, yaw_9,
-                                        );
-                                        // Transform back to IMU frame for internal state consistency.
-                                        current_quat_opt = Some(cam_hybrid * mount_q);
-                                    } else {
-                                        // Near zenith, fall back completely to 9-axis to avoid gimbal lock
-                                        current_quat_opt = Some(abs_9axis);
-                                    }
+                                    let mut vec_hybrid = vec_9;
+
+                                    // 4. Hybridize: Altitude (y) from Gyro, Azimuth/Roll (x, z) from 9-axis
+                                    vec_hybrid.y = vec_g.y;
+
+                                    // 5. Map back to IMU body frame and apply
+                                    let cam_diff_hybrid = UnitQuaternion::new(vec_hybrid);
+                                    let q_diff_hybrid =
+                                        mount_q.conjugate() * cam_diff_hybrid * mount_q;
+
+                                    current_quat_opt = Some(prev_quat * q_diff_hybrid);
 
                                     gyro_vec_deg_opt =
                                         Some(gyro_vec_rad * (180.0 / std::f64::consts::PI));
