@@ -753,7 +753,7 @@ dependencies = [
 
 [[package]]
 name = "cedar-server"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "approx",
  "ascom-alpaca",
@@ -805,7 +805,6 @@ dependencies = [
  "prost",
  "prost-build",
  "prost-types",
- "rayon",
  "tokio",
  "tonic",
  "tonic-build",
@@ -1154,6 +1153,7 @@ dependencies = [
 name = "cypress-server"
 version = "0.1.0"
 dependencies = [
+ "cedar-camera",
  "cedar-elements 0.1.0",
  "cedar-server",
  "cypress-imu",
@@ -2568,9 +2568,7 @@ checksum = "b5b646652bf6661599e1da8901b3b9522896f01e736bad5f723fe7a3a27f899d"
 
 [[package]]
 name = "libcamera"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0af3de3417824209a2f1619bce9c2b19aca5bdeb4233376208fcea87e6104f36"
+version = "0.3.0"
 dependencies = [
  "bitflags 2.11.0",
  "drm-fourcc",
@@ -2585,9 +2583,7 @@ dependencies = [
 
 [[package]]
 name = "libcamera-sys"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bb33a6d621530b7d10c25d8871d86615e84249854d8e5974812ca77458df9253"
+version = "0.3.0"
 dependencies = [
  "bindgen 0.70.1",
  "cc",

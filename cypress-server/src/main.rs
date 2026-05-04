@@ -12,7 +12,85 @@ use tokio::sync::Mutex;
 use cedar_elements::{imu_trait::ImuTrait, solver_trait::SolverTrait};
 use cedar_server::cedar_server::server_main;
 
+fn convert_to_8bit_optimized(
+    stride: usize,
+    buf_data: &[u8],
+    image_data: &mut [u8],
+    width: usize,
+    height: usize,
+    is_10_bit: bool,
+    is_12_bit: bool,
+    is_packed: bool,
+) {
+    if !is_packed {
+        panic!("Unpacked raw format not yet supported");
+    }
+
+    if is_10_bit {
+        let is_contiguous = stride == (width * 5) / 4;
+
+        if is_contiguous {
+            let total_pixels = width * height;
+            for (s, d) in buf_data[..total_pixels * 5 / 4]
+                .chunks_exact(5)
+                .zip(image_data[..total_pixels].chunks_exact_mut(4))
+            {
+                d[0] = s[0];
+                d[1] = s[1];
+                d[2] = s[2];
+                d[3] = s[3];
+            }
+        } else {
+            // Fallback to original if not contiguous
+            for row in 0..height {
+                let buf_row_start = row * stride;
+                let buf_row_end = buf_row_start + width * 5 / 4;
+                let pix_row_start = row * width;
+                let pix_row_end = pix_row_start + width;
+                for (buf_chunk, pix_chunk) in buf_data[buf_row_start..buf_row_end]
+                    .chunks_exact(5)
+                    .zip(image_data[pix_row_start..pix_row_end].chunks_exact_mut(4))
+                {
+                    pix_chunk[0] = buf_chunk[0];
+                    pix_chunk[1] = buf_chunk[1];
+                    pix_chunk[2] = buf_chunk[2];
+                    pix_chunk[3] = buf_chunk[3];
+                }
+            }
+        }
+    } else {
+        assert!(is_12_bit, "Expected 12-bit format");
+        let is_contiguous = stride == (width * 3) / 2;
+
+        if is_contiguous {
+            let total_pixels = width * height;
+            let src_chunks = buf_data[..total_pixels * 3 / 2].chunks_exact(3);
+            let dst_chunks = image_data[..total_pixels].chunks_exact_mut(2);
+            for (s, d) in src_chunks.zip(dst_chunks) {
+                d[0] = s[0];
+                d[1] = s[1];
+            }
+        } else {
+            // Fallback: Original row-by-row
+            for row in 0..height {
+                let buf_row_start = row * stride;
+                let buf_row_end = buf_row_start + width * 3 / 2;
+                let pix_row_start = row * width;
+                let pix_row_end = pix_row_start + width;
+
+                let src_chunks = buf_data[buf_row_start..buf_row_end].chunks_exact(3);
+                let dst_chunks = image_data[pix_row_start..pix_row_end].chunks_exact_mut(2);
+                for (s, d) in src_chunks.zip(dst_chunks) {
+                    d[0] = s[0];
+                    d[1] = s[1];
+                }
+            }
+        }
+    }
+}
 fn main() {
+    cedar_camera::rpi_camera::set_converter(convert_to_8bit_optimized);
+
     server_main(
         "Copyright (c) 2026 Steven Rosenthal smr@dt3.org.\n\
          Licensed for non-commercial use.\n\

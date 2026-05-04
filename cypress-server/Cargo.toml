@@ -8,6 +8,7 @@ name = "cypress-server"
 path = "src/main.rs"
 
 [dependencies]
+cedar-camera = { path = "../../cedar-camera" }
 cypress-solver = { path = "../cypress-solver" }
 cypress-imu = { path = "../cypress-imu" }
 cedar-elements = { path = "../../cedar-server/elements" }
