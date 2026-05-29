@@ -8,8 +8,13 @@ use cypress_solver::Tetra3Solver;
 use pico_args::Arguments;
 use tetra3::Solver;
 use tokio::sync::Mutex;
+use image::GrayImage;
 
-use cedar_elements::{imu_trait::ImuTrait, solver_trait::SolverTrait};
+use cedar_elements::{
+    image_utils::ImageRotator,
+    imu_trait::ImuTrait, 
+    solver_trait::SolverTrait
+};
 use cedar_server::cedar_server::server_main;
 
 fn convert_to_8bit_optimized(
@@ -89,8 +94,84 @@ fn convert_to_8bit_optimized(
         }
     }
 }
+
+/// A highly optimized custom rotation function designed for constrained CPUs
+/// like the Cortex-A53 (Raspberry Pi Zero 2W).
+/// 
+/// Algorithmic improvements:
+/// 1. Loop Fusion: We skip allocating a full-width rotated intermediate image
+///    and skip the secondary crop pass. We only iterate exactly over the pixels
+///    that will end up in the final square crop.
+/// 2. Fixed-Point Math: Floating-point math is expensive. We precompute the
+///    step sizes for rays across the destination image and use 16.16 fixed-point
+///    arithmetic (integers) to traverse the source image.
+/// 3. Nearest Neighbor Interpolation: Uses pure single-pixel fetch to avoid 
+///    any multiplications and fractional calculations.
+fn custom_rotate_image_and_crop(image: &GrayImage, rotator: &ImageRotator) -> GrayImage {
+    let (w, h) = image.dimensions();
+    assert!(w >= h, "rotate_image_and_crop requires width >= height, got {}x{}", w, h);
+    let square_size = h;
+
+    let mut output = GrayImage::new(square_size, square_size);
+    let out_buf = output.as_mut();
+    let in_buf = image.as_raw();
+    let in_w = w as i32;
+    let in_h = h as i32;
+
+    // 16.16 fixed point multiplier
+    let f_scale = 65536.0;
+
+    // Calculate how much the source coordinate changes when we step 1 pixel in destination X or Y
+    let dx_src_x = (rotator.cos_term * f_scale) as i32;
+    let dx_src_y = (rotator.sin_term * f_scale) as i32;
+    let dy_src_x = (-rotator.sin_term * f_scale) as i32;
+    let dy_src_y = (rotator.cos_term * f_scale) as i32;
+
+    // Find the source coordinate that corresponds to the top-left (0,0) of the output image.
+    // The default `transform_from_rotated` gives us the exact floating point starting coordinate.
+    let (start_src_x_f, start_src_y_f) = rotator.transform_from_rotated(0.0, 0.0, w, h);
+    
+    let mut row_src_x = (start_src_x_f * f_scale) as i32;
+    let mut row_src_y = (start_src_y_f * f_scale) as i32;
+
+    let mut out_idx = 0;
+
+    // NEAREST NEIGHBOR
+    for _y in 0..square_size {
+        let mut src_x = row_src_x;
+        let mut src_y = row_src_y;
+
+        for _x in 0..square_size {
+            // Round to nearest integer (+0.5 in fixed point is +32768)
+            let px = (src_x + 32768) >> 16;
+            let py = (src_y + 32768) >> 16;
+
+            let blended = if px >= 0 && px < in_w && py >= 0 && py < in_h {
+                // Safe fetch without internal bounds checks
+                unsafe { *in_buf.get_unchecked((py * in_w + px) as usize) }
+            } else {
+                0 // Default black outside image bounds
+            };
+
+            out_buf[out_idx] = blended;
+            out_idx += 1;
+
+            // Step forward in X direction
+            src_x += dx_src_x;
+            src_y += dx_src_y;
+        }
+        
+        // Step forward in Y direction (for the next row)
+        row_src_x += dy_src_x;
+        row_src_y += dy_src_y;
+    }
+
+    output
+}
+
 fn main() {
     cedar_camera::rpi_camera::set_converter(convert_to_8bit_optimized);
+    cedar_elements::image_utils::set_rotate_crop_fn(custom_rotate_image_and_crop);
 
     server_main(
         "Copyright (c) 2026 Steven Rosenthal smr@dt3.org.\n\
