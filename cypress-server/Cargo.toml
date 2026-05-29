@@ -16,3 +16,4 @@ cedar-server = { path = "../../cedar-server/server" }
 pico-args = "0.5.0"
 tokio = { version = "1.0", features = ["rt-multi-thread", "sync"] }
 tetra3 = { git = "https://github.com/oakamil/olive-solve.git" }
+image = "0.25.10"

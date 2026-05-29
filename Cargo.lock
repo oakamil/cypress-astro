@@ -1160,6 +1160,7 @@ dependencies = [
  "cedar-server",
  "cypress-imu",
  "cypress-solver",
+ "image",
  "pico-args",
  "tetra3",
  "tokio",
