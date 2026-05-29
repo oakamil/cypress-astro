@@ -21,6 +21,7 @@ fn convert_to_8bit_optimized(
     is_10_bit: bool,
     is_12_bit: bool,
     is_packed: bool,
+    _do_bin_2x2: bool,
 ) {
     if !is_packed {
         panic!("Unpacked raw format not yet supported");
@@ -147,7 +148,7 @@ fn main() {
                     None
                 }
             };
-            (None, None, imu, Some(solver_arc))
+            (None, None, imu, None, Some(solver_arc))
         },
     );
 }

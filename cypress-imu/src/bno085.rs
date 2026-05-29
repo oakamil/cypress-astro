@@ -700,6 +700,37 @@ impl Bno085Imu {
         }
     }
 
+    pub fn save_calibration_sync(&self) -> Result<(), String> {
+        let align = self.alignment.blocking_read();
+        let mount_q = align.mount_q;
+        let confidence = align.best_calibration_confidence;
+
+        let cal_path = get_calibration_file_path();
+        let data = format!(
+            "{},{},{},{},{}",
+            mount_q[0], mount_q[1], mount_q[2], mount_q[3], confidence
+        );
+
+        std::fs::write(&cal_path, data)
+            .map_err(|e| format!("Failed to write calibration to disk: {}", e))
+    }
+
+    pub async fn save_calibration(&self) -> Result<(), String> {
+        let align = self.alignment.read().await;
+        let mount_q = align.mount_q;
+        let confidence = align.best_calibration_confidence;
+
+        let cal_path = get_calibration_file_path();
+        let data = format!(
+            "{},{},{},{},{}",
+            mount_q[0], mount_q[1], mount_q[2], mount_q[3], confidence
+        );
+
+        tokio::fs::write(&cal_path, data)
+            .await
+            .map_err(|e| format!("Failed to write calibration to disk: {}", e))
+    }
+
     // Helper to spin up a non-blocking save
     fn save_calibration_to_disk(mount_q: UnitQuaternion<f64>, confidence: f64) {
         tokio::spawn(async move {

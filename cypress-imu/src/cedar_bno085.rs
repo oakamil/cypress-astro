@@ -145,4 +145,18 @@ impl ImuTrait for CedarBno085Wrapper {
     fn get_model(&self) -> String {
         "BNO085".to_string()
     }
+
+    fn start(&self) {
+        // The BNO085 engine is started during wrapper construction in this implementation,
+        // so start() is a no-op here.
+    }
+
+    fn save_state(&self) -> Result<(), CanonicalError> {
+        self.engine
+            .save_calibration_sync()
+            .map_err(|e| CanonicalError {
+                code: CanonicalErrorCode::Internal,
+                message: e,
+            })
+    }
 }

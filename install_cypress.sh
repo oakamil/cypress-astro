@@ -2,12 +2,23 @@
 
 set -e  # Exit on any error
 
-if [ "$#" -ne 1 ]; then
-    echo "Usage: $0 <path to cedar input image>"
+if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+    echo "Usage: $0 <path to cedar input image> [--no-boot]"
     exit 1
 fi
 
 CEDAR_IMAGE_FILE="$1"
+SKIP_BOOT=false
+
+if [ "$#" -eq 2 ]; then
+    if [ "$2" == "--no-boot" ]; then
+        SKIP_BOOT=true
+    else
+        echo "Unknown argument: $2"
+        echo "Usage: $0 <path to cedar input image> [--no-boot]"
+        exit 1
+    fi
+fi
 
 MOUNT_POINT="$HOME/mnt/rpi_root"
 BOOT_MOUNT_POINT="$HOME/mnt/rpi_boot"
@@ -34,11 +45,11 @@ sudo cp dist/cypress-server $BIN_DIR/.
 
 echo
 echo "Disabling Cedar service"
-sudo systemctl --root=$ROOT disable cedar.service
+sudo systemctl --root=$MOUNT_POINT disable cedar.service
 
 echo
 echo "Updating Cedar service to run Cypress server"
-sudo bash -c "cat > $ROOT/lib/systemd/system/cedar.service <<EOF
+sudo bash -c "cat > $MOUNT_POINT/lib/systemd/system/cedar.service <<EOF
 [Unit]
 Description=Cedar Server
 After=NetworkManager.service network-online.target cedar-ap-setup.service
@@ -49,7 +60,7 @@ Wants=cedar-ap-setup.service
 User=cedar
 WorkingDirectory=/home/cedar/run
 Type=simple
-ExecStart=/bin/bash -c '/home/cedar/cedar/bin/cypress-server'
+ExecStart=/bin/bash -c '/home/cedar/cedar/bin/cypress-server --min_frame_interval 0.020'
 
 [Install]
 WantedBy=multi-user.target
@@ -72,20 +83,24 @@ echo
 echo "Copying Cedar-Aim"
 sudo cp -R ../cedar-aim/cedar_flutter/build/web $CEDAR_AIM_DIR/.
 
-echo
-echo "Using device: ${LOOP_DEV}p1"
-mkdir -p "$BOOT_MOUNT_POINT"
-sudo mount "${LOOP_DEV}p1" "$BOOT_MOUNT_POINT"
+if [ "$SKIP_BOOT" = false ]; then
+    echo
+    echo "Using device: ${LOOP_DEV}p1"
+    mkdir -p "$BOOT_MOUNT_POINT"
+    sudo mount "${LOOP_DEV}p1" "$BOOT_MOUNT_POINT"
 
-echo
-echo "Adding camera configuration"
-sudo -E bash -c 'printf "dtoverlay=imx290,clock-frequency=74250000\n" >> ${BOOT_MOUNT_POINT}/config.txt'
+    echo
+    echo "Adding camera configuration"
+    #echo "dtoverlay=imx290,clock-frequency=74250000" | sudo tee -a "${BOOT_MOUNT_POINT}/config.txt" > /dev/null
+fi
 
 echo
 echo "Unmounting image"
 sync
 sudo umount "$MOUNT_POINT"
-sudo umount "$BOOT_MOUNT_POINT"
+if [ "$SKIP_BOOT" = false ]; then
+    sudo umount "$BOOT_MOUNT_POINT"
+fi
 sleep 3
 sudo losetup -d "$LOOP_DEV"
 

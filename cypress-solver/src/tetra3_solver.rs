@@ -118,6 +118,7 @@ impl SolverTrait for Tetra3Solver {
                     image_sky_coord: Some(CelestialCoord {
                         ra: result.ra.unwrap_or(0.0),
                         dec: result.dec.unwrap_or(0.0),
+                        epoch: None,
                     }),
                     roll: result.roll.unwrap_or(0.0),
                     fov: result.fov.unwrap_or(0.0),
@@ -138,7 +139,7 @@ impl SolverTrait for Tetra3Solver {
                     for (&ra, &dec) in ras.iter().zip(decs.iter()) {
                         plate_solution
                             .target_sky_coord
-                            .push(CelestialCoord { ra, dec });
+                            .push(CelestialCoord { ra, dec, epoch: None });
                     }
                 }
 
@@ -165,6 +166,7 @@ impl SolverTrait for Tetra3Solver {
                             sky_coord: Some(CelestialCoord {
                                 ra: star[0],
                                 dec: star[1],
+                                epoch: None,
                             }),
                             mag: star[2] as f32,
                         });
@@ -176,7 +178,7 @@ impl SolverTrait for Tetra3Solver {
                     for &(ra, dec, mag, y, x) in cat_stars {
                         plate_solution.catalog_stars.push(StarInfo {
                             pixel: Some(ImageCoord { x, y }),
-                            sky_coord: Some(CelestialCoord { ra, dec }),
+                            sky_coord: Some(CelestialCoord { ra, dec, epoch: None }),
                             mag: mag as f32,
                         });
                     }
@@ -196,6 +198,7 @@ impl SolverTrait for Tetra3Solver {
                         image_sky_coord: Some(CelestialCoord {
                             ra: imu.ra,
                             dec: imu.dec,
+                            epoch: None,
                         }),
                         roll: imu.north_roll_angle,
                         fov: params.fov_estimate.map(|(fov, _)| fov).unwrap_or(0.0),
@@ -315,6 +318,7 @@ mod tests {
                 .map(|coord| CelestialCoord {
                     ra: coord.ra,
                     dec: coord.dec,
+                    epoch: None,
                 })
                 .collect();
             extension.target_sky_coord = Some(target_sky_coords);

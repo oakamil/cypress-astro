@@ -712,6 +712,7 @@ dependencies = [
  "astro",
  "async-trait",
  "canonical-error",
+ "cedar_detect",
  "chrono",
  "image",
  "imageproc",
@@ -753,7 +754,7 @@ dependencies = [
 
 [[package]]
 name = "cedar-server"
-version = "1.0.3"
+version = "1.0.6"
 dependencies = [
  "approx",
  "ascom-alpaca",
@@ -773,6 +774,7 @@ dependencies = [
  "hyper 0.14.32",
  "image",
  "imageproc",
+ "libc",
  "log",
  "memchr",
  "nix 0.28.0",
