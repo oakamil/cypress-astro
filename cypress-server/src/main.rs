@@ -28,6 +28,22 @@ fn convert_to_8bit_optimized(
     is_packed: bool,
     _do_bin_2x2: bool,
 ) {
+    if !is_10_bit && !is_12_bit {
+        let is_contiguous = stride == width;
+        if is_contiguous {
+            let total_pixels = width * height;
+            image_data[..total_pixels].copy_from_slice(&buf_data[..total_pixels]);
+        } else {
+            for row in 0..height {
+                let src_start = row * stride;
+                let dst_start = row * width;
+                image_data[dst_start..dst_start + width]
+                    .copy_from_slice(&buf_data[src_start..src_start + width]);
+            }
+        }
+        return;
+    }
+
     if !is_packed {
         panic!("Unpacked raw format not yet supported");
     }
