@@ -20,120 +20,7 @@ use cedar_server::cedar_server::server_main;
 
 use std::arch::aarch64::*;
 
-unsafe fn bin_neon(
-    s1_ptr: *const u8,
-    s2_ptr: *const u8,
-    d_ptr: *mut u8,
-    width: usize,
-) -> (usize, usize) {
-    unsafe {
-    let mask0 = vld1q_u8([0, 1, 2, 3, 5, 6, 7, 8, 10, 11, 12, 13, 15, 16, 17, 18].as_ptr());
-    let mask1 = vld1q_u8([4, 5, 6, 7, 9, 10, 11, 12, 14, 15, 16, 17, 19, 20, 21, 22].as_ptr());
-    let mask2 = vld1q_u8([8, 9, 10, 11, 13, 14, 15, 16, 18, 19, 20, 21, 23, 24, 25, 26].as_ptr());
-    let mask3 = vld1q_u8(
-        [
-            12, 13, 14, 15, 17, 18, 19, 20, 22, 23, 24, 25, 27, 28, 29, 30,
-        ]
-        .as_ptr(),
-    );
 
-    let mut in_x = 0;
-    let mut out_x = 0;
-
-    // Process 64 pixels (80 bytes) per iteration
-    let neon_iters = width / 64;
-    for _ in 0..neon_iters {
-        let r1_v0 = vld1q_u8(s1_ptr.add(in_x));
-        let r1_v1 = vld1q_u8(s1_ptr.add(in_x + 16));
-        let r1_v2 = vld1q_u8(s1_ptr.add(in_x + 32));
-        let r1_v3 = vld1q_u8(s1_ptr.add(in_x + 48));
-        let r1_v4 = vld1q_u8(s1_ptr.add(in_x + 64));
-
-        let r2_v0 = vld1q_u8(s2_ptr.add(in_x));
-        let r2_v1 = vld1q_u8(s2_ptr.add(in_x + 16));
-        let r2_v2 = vld1q_u8(s2_ptr.add(in_x + 32));
-        let r2_v3 = vld1q_u8(s2_ptr.add(in_x + 48));
-        let r2_v4 = vld1q_u8(s2_ptr.add(in_x + 64));
-
-        let r1_p0 = vqtbl2q_u8(uint8x16x2_t(r1_v0, r1_v1), mask0);
-        let r2_p0 = vqtbl2q_u8(uint8x16x2_t(r2_v0, r2_v1), mask0);
-
-        let r1_p1 = vqtbl2q_u8(uint8x16x2_t(r1_v1, r1_v2), mask1);
-        let r2_p1 = vqtbl2q_u8(uint8x16x2_t(r2_v1, r2_v2), mask1);
-
-        let r1_p2 = vqtbl2q_u8(uint8x16x2_t(r1_v2, r1_v3), mask2);
-        let r2_p2 = vqtbl2q_u8(uint8x16x2_t(r2_v2, r2_v3), mask2);
-
-        let r1_p3 = vqtbl2q_u8(uint8x16x2_t(r1_v3, r1_v4), mask3);
-        let r2_p3 = vqtbl2q_u8(uint8x16x2_t(r2_v3, r2_v4), mask3);
-
-        let sum_p0 = vaddq_u16(vpaddlq_u8(r1_p0), vpaddlq_u8(r2_p0));
-        let out_p0 = vmovn_u16(vshrq_n_u16::<2>(sum_p0));
-        vst1_u8(d_ptr.add(out_x), out_p0);
-
-        let sum_p1 = vaddq_u16(vpaddlq_u8(r1_p1), vpaddlq_u8(r2_p1));
-        let out_p1 = vmovn_u16(vshrq_n_u16::<2>(sum_p1));
-        vst1_u8(d_ptr.add(out_x + 8), out_p1);
-
-        let sum_p2 = vaddq_u16(vpaddlq_u8(r1_p2), vpaddlq_u8(r2_p2));
-        let out_p2 = vmovn_u16(vshrq_n_u16::<2>(sum_p2));
-        vst1_u8(d_ptr.add(out_x + 16), out_p2);
-
-        let sum_p3 = vaddq_u16(vpaddlq_u8(r1_p3), vpaddlq_u8(r2_p3));
-        let out_p3 = vmovn_u16(vshrq_n_u16::<2>(sum_p3));
-        vst1_u8(d_ptr.add(out_x + 24), out_p3);
-
-        in_x += 80;
-        out_x += 32;
-    }
-    (in_x, out_x)
-    }
-}
-
-unsafe fn bin_neon_12bit(
-    s1_ptr: *const u8,
-    s2_ptr: *const u8,
-    d_ptr: *mut u8,
-    width: usize,
-) -> (usize, usize) {
-    unsafe {
-    let mask0 = vld1q_u8([0, 1, 3, 4, 6, 7, 9, 10, 12, 13, 15, 16, 18, 19, 21, 22].as_ptr());
-    let mask1 = vld1q_u8([8, 9, 11, 12, 14, 15, 17, 18, 20, 21, 23, 24, 26, 27, 29, 30].as_ptr());
-
-    let mut in_x = 0;
-    let mut out_x = 0;
-
-    // Process 32 pixels per row (48 bytes per row, 16 bytes output)
-    let neon_iters = width / 32;
-    for _ in 0..neon_iters {
-        let r1_v0 = vld1q_u8(s1_ptr.add(in_x));
-        let r1_v1 = vld1q_u8(s1_ptr.add(in_x + 16));
-        let r1_v2 = vld1q_u8(s1_ptr.add(in_x + 32));
-
-        let r2_v0 = vld1q_u8(s2_ptr.add(in_x));
-        let r2_v1 = vld1q_u8(s2_ptr.add(in_x + 16));
-        let r2_v2 = vld1q_u8(s2_ptr.add(in_x + 32));
-
-        let r1_p0 = vqtbl2q_u8(uint8x16x2_t(r1_v0, r1_v1), mask0);
-        let r1_p1 = vqtbl2q_u8(uint8x16x2_t(r1_v1, r1_v2), mask1);
-
-        let r2_p0 = vqtbl2q_u8(uint8x16x2_t(r2_v0, r2_v1), mask0);
-        let r2_p1 = vqtbl2q_u8(uint8x16x2_t(r2_v1, r2_v2), mask1);
-
-        let sum_p0 = vaddq_u16(vpaddlq_u8(r1_p0), vpaddlq_u8(r2_p0));
-        let out_p0 = vmovn_u16(vshrq_n_u16::<2>(sum_p0));
-        vst1_u8(d_ptr.add(out_x), out_p0);
-
-        let sum_p1 = vaddq_u16(vpaddlq_u8(r1_p1), vpaddlq_u8(r2_p1));
-        let out_p1 = vmovn_u16(vshrq_n_u16::<2>(sum_p1));
-        vst1_u8(d_ptr.add(out_x + 8), out_p1);
-
-        in_x += 48;
-        out_x += 16;
-    }
-    (in_x, out_x)
-    }
-}
 
 unsafe fn unpack_neon(s_ptr: *const u8, d_ptr: *mut u8, total_pixels: usize) -> (usize, usize) {
     unsafe {
@@ -212,127 +99,15 @@ fn convert_to_8bit_optimized(
     stride: usize,
     buf_data: &[u8],
     image_data: &mut [u8],
+    binned_data: &mut [u8],
     width: usize,
     height: usize,
     is_10_bit: bool,
     is_12_bit: bool,
     is_packed: bool,
-    do_bin_2x2: bool,
 ) {
-    if do_bin_2x2 {
-        let out_width = width / 2;
-        let out_height = height / 2;
-
-        if !is_10_bit && !is_12_bit {
-            for out_y in 0..out_height {
-                let row1_start = out_y * 2 * stride;
-                let row2_start = row1_start + stride;
-                let out_row_start = out_y * out_width;
-
-                let s1_slice = &buf_data[row1_start..row1_start + width];
-                let s2_slice = &buf_data[row2_start..row2_start + width];
-                let d_slice = &mut image_data[out_row_start..out_row_start + out_width];
-
-                let mut in_x = 0;
-                let mut out_x = 0;
-                while in_x + 2 <= width && out_x < out_width {
-                    unsafe {
-                        let v1 =
-                            std::ptr::read_unaligned(s1_slice.as_ptr().add(in_x) as *const u16);
-                        let v2 =
-                            std::ptr::read_unaligned(s2_slice.as_ptr().add(in_x) as *const u16);
-                        let sum1 = (v1 & 0xFF) + (v1 >> 8);
-                        let sum2 = (v2 & 0xFF) + (v2 >> 8);
-                        let total = sum1 + sum2;
-                        *d_slice.as_mut_ptr().add(out_x) = (total >> 2) as u8;
-                    }
-                    in_x += 2;
-                    out_x += 1;
-                }
-            }
-            return;
-        }
-
-        if !is_packed {
-            panic!("Unpacked raw format not yet supported");
-        }
-
-        if is_10_bit {
-            for out_y in 0..out_height {
-                let row1_start = out_y * 2 * stride;
-                let row2_start = row1_start + stride;
-                let out_row_start = out_y * out_width;
-
-                let s1_slice = &buf_data[row1_start..row1_start + width * 5 / 4];
-                let s2_slice = &buf_data[row2_start..row2_start + width * 5 / 4];
-                let d_slice = &mut image_data[out_row_start..out_row_start + out_width];
-
-                let mut in_x = 0;
-                let mut out_x = 0;
-                let s1_ptr = s1_slice.as_ptr();
-                let s2_ptr = s2_slice.as_ptr();
-                let d_ptr = d_slice.as_mut_ptr();
-
-                let (neon_in, neon_out) = unsafe { bin_neon(s1_ptr, s2_ptr, d_ptr, width) };
-                in_x += neon_in;
-                out_x += neon_out;
-
-                // Handle remaining pixels
-                while in_x + 4 <= width * 5 / 4 && out_x < out_width {
-                    unsafe {
-                        let mut sum0 = *s1_ptr.add(in_x) as u16 + *s1_ptr.add(in_x + 1) as u16;
-                        sum0 += *s2_ptr.add(in_x) as u16 + *s2_ptr.add(in_x + 1) as u16;
-                        *d_ptr.add(out_x) = (sum0 >> 2) as u8;
-                        out_x += 1;
-
-                        if out_x < out_width {
-                            let mut sum1 =
-                                *s1_ptr.add(in_x + 2) as u16 + *s1_ptr.add(in_x + 3) as u16;
-                            sum1 += *s2_ptr.add(in_x + 2) as u16 + *s2_ptr.add(in_x + 3) as u16;
-                            *d_ptr.add(out_x) = (sum1 >> 2) as u8;
-                            out_x += 1;
-                        }
-                    }
-                    in_x += 5;
-                }
-            }
-        } else {
-            assert!(is_12_bit, "Expected 12-bit format");
-            for out_y in 0..out_height {
-                let row1_start = out_y * 2 * stride;
-                let row2_start = row1_start + stride;
-                let out_row_start = out_y * out_width;
-
-                let s1_slice = &buf_data[row1_start..row1_start + width * 3 / 2];
-                let s2_slice = &buf_data[row2_start..row2_start + width * 3 / 2];
-                let d_slice = &mut image_data[out_row_start..out_row_start + out_width];
-
-                let mut in_x = 0;
-                let mut out_x = 0;
-                let s1_ptr = s1_slice.as_ptr();
-                let s2_ptr = s2_slice.as_ptr();
-                let d_ptr = d_slice.as_mut_ptr();
-
-                let (neon_in, neon_out) = unsafe { bin_neon_12bit(s1_ptr, s2_ptr, d_ptr, width) };
-                in_x += neon_in;
-                out_x += neon_out;
-
-                while in_x + 2 <= width * 3 / 2 && out_x < out_width {
-                    unsafe {
-                        let v1 = std::ptr::read_unaligned(s1_ptr.add(in_x) as *const u16);
-                        let v2 = std::ptr::read_unaligned(s2_ptr.add(in_x) as *const u16);
-                        let sum1 = (v1 & 0xFF) + (v1 >> 8);
-                        let sum2 = (v2 & 0xFF) + (v2 >> 8);
-                        let total = sum1 + sum2;
-                        *d_ptr.add(out_x) = (total >> 2) as u8;
-                    }
-                    in_x += 3;
-                    out_x += 1;
-                }
-            }
-        }
-        return;
-    }
+    let out_width = width / 2;
+    let out_height = height / 2;
 
     if !is_10_bit && !is_12_bit {
         let is_contiguous = stride == width;
@@ -345,6 +120,31 @@ fn convert_to_8bit_optimized(
                 let dst_start = row * width;
                 image_data[dst_start..dst_start + width]
                     .copy_from_slice(&buf_data[src_start..src_start + width]);
+            }
+        }
+
+        for out_y in 0..out_height {
+            let row1_start = out_y * 2 * width;
+            let row2_start = row1_start + width;
+            let out_row_start = out_y * out_width;
+
+            let s1_slice = &image_data[row1_start..row1_start + width];
+            let s2_slice = &image_data[row2_start..row2_start + width];
+            let d_slice = &mut binned_data[out_row_start..out_row_start + out_width];
+
+            let mut in_x = 0;
+            let mut out_x = 0;
+            while in_x + 2 <= width && out_x < out_width {
+                unsafe {
+                    let v1 = std::ptr::read_unaligned(s1_slice.as_ptr().add(in_x) as *const u16);
+                    let v2 = std::ptr::read_unaligned(s2_slice.as_ptr().add(in_x) as *const u16);
+                    let sum1 = (v1 & 0xFF) + (v1 >> 8);
+                    let sum2 = (v2 & 0xFF) + (v2 >> 8);
+                    let total = sum1 + sum2;
+                    *d_slice.as_mut_ptr().add(out_x) = (total >> 2) as u8;
+                }
+                in_x += 2;
+                out_x += 1;
             }
         }
         return;
@@ -380,7 +180,6 @@ fn convert_to_8bit_optimized(
                 d[3] = s[3];
             }
         } else {
-            // Fallback to original if not contiguous
             for row in 0..height {
                 let buf_row_start = row * stride;
                 let buf_row_end = buf_row_start + width * 5 / 4;
@@ -433,7 +232,6 @@ fn convert_to_8bit_optimized(
                 d[1] = s[1];
             }
         } else {
-            // Fallback: Original row-by-row
             for row in 0..height {
                 let buf_row_start = row * stride;
                 let buf_row_end = buf_row_start + width * 3 / 2;
@@ -458,6 +256,31 @@ fn convert_to_8bit_optimized(
                     d[1] = s[1];
                 }
             }
+        }
+    }
+
+    for out_y in 0..out_height {
+        let row1_start = out_y * 2 * width;
+        let row2_start = row1_start + width;
+        let out_row_start = out_y * out_width;
+
+        let s1_slice = &image_data[row1_start..row1_start + width];
+        let s2_slice = &image_data[row2_start..row2_start + width];
+        let d_slice = &mut binned_data[out_row_start..out_row_start + out_width];
+
+        let mut in_x = 0;
+        let mut out_x = 0;
+        while in_x + 2 <= width && out_x < out_width {
+            unsafe {
+                let v1 = std::ptr::read_unaligned(s1_slice.as_ptr().add(in_x) as *const u16);
+                let v2 = std::ptr::read_unaligned(s2_slice.as_ptr().add(in_x) as *const u16);
+                let sum1 = (v1 & 0xFF) + (v1 >> 8);
+                let sum2 = (v2 & 0xFF) + (v2 >> 8);
+                let total = sum1 + sum2;
+                *d_slice.as_mut_ptr().add(out_x) = (total >> 2) as u8;
+            }
+            in_x += 2;
+            out_x += 1;
         }
     }
 }
@@ -603,5 +426,6 @@ fn main() {
             };
             (None, None, imu, None, Some(solver_arc))
         },
+        Some(2),
     );
 }
