@@ -3,12 +3,15 @@
 //
 // Note: This implementation is intended for aarch64 only.
 
+mod cypress_sky;
+
 use std::{path::Path, sync::Arc};
 
 use cypress_imu::{
     bno085::{Bno085Imu, ImuRotationMode},
     cedar_bno085::CedarBno085Wrapper,
 };
+use cypress_sky::CypressSky;
 use cypress_solver::Tetra3Solver;
 use image::GrayImage;
 use pico_args::Arguments;
@@ -424,7 +427,8 @@ fn main() {
                     None
                 }
             };
-            (None, None, imu, None, Some(solver_arc))
+            let cedar_sky = Arc::new(Mutex::new(CypressSky::new()));
+            (Some(cedar_sky), None, imu, None, Some(solver_arc))
         },
         Some(2),
     );
