@@ -1,7 +1,8 @@
 // Required Notice: Copyright (c) 2026 Omair Kamil
-// See LICENSE file in root directory for license terms.
+// See LICENSE file in root directory for license terms
 
 use async_trait::async_trait;
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use canonical_error::{CanonicalError, CanonicalErrorCode};
@@ -10,14 +11,20 @@ use cedar_elements::imu_trait::{
     TransformCalibration, ZeroBias,
 };
 
-use crate::bno085::{Bno085Imu, MotionState, MountCoordinates};
+use olive_imu::{Imu, MotionState, MountCoordinates};
 
-pub struct CedarBno085Wrapper {
-    pub engine: Bno085Imu,
+pub struct CedarImuWrapper {
+    pub engine: Arc<Imu>,
+}
+
+impl CedarImuWrapper {
+    pub fn new(engine: Arc<Imu>) -> Self {
+        Self { engine }
+    }
 }
 
 #[async_trait]
-impl ImuTrait for CedarBno085Wrapper {
+impl ImuTrait for CedarImuWrapper {
     async fn report_true_camera_pointing(
         &self,
         camera_pointing: &HorizonCoordinates,
@@ -32,11 +39,11 @@ impl ImuTrait for CedarBno085Wrapper {
         self.engine.update_anchor(&mount_coords, timestamp).await;
     }
 
-    // Ignored. Dead reckoning continues based on the last known anchors.
     async fn report_camera_pointing_lost(&self, _timestamp: &SystemTime) {}
 
     async fn reset(&self) {
         self.engine.reset_anchors().await;
+        self.engine.reset_bias_calibration();
     }
 
     async fn get_estimated_camera_pointing(
@@ -65,22 +72,15 @@ impl ImuTrait for CedarBno085Wrapper {
     }
 
     async fn get_calibration(&self) -> (Option<ZeroBias>, Option<TransformCalibration>) {
-        // Calculate dynamic zero bias from the most recent contiguous motionless frames (up to 50)
-        let bias_vec = self.engine.get_recent_stable_gyro_bias(50);
-        let bias = if let Some(vec) = bias_vec {
-            Some(ZeroBias {
-                x: vec.x,
-                y: vec.y,
-                z: vec.z,
-            })
-        } else {
-            // If currently moving or buffer is empty, default to zero
-            Some(ZeroBias {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            })
-        };
+        // Because the olive-imu engine now uses a continuous EMA loop to automatically
+        // track and apply zero-bias under the hood, we return the internal EMA bias here
+        // so clients can see the current baseline offset.
+        let bias_vec = self.engine.get_bias();
+        let bias = Some(ZeroBias {
+            x: bias_vec.x,
+            y: bias_vec.y,
+            z: bias_vec.z,
+        });
 
         let metrics = self.engine.get_calibration_metrics().await;
         let calibration = metrics.map(|m| TransformCalibration {
@@ -95,22 +95,22 @@ impl ImuTrait for CedarBno085Wrapper {
     }
 
     async fn get_state(&self) -> Result<(ImuState, SystemTime), CanonicalError> {
-        if let Some(state) = self.engine.get_latest_state() {
+        if let Some(update) = self.engine.get_latest_state() {
             Ok((
                 ImuState {
-                    timestamp: state.timestamp,
+                    timestamp: update.timestamp,
                     accel: AccelData {
-                        x: state.accel.x,
-                        y: state.accel.y,
-                        z: state.accel.z,
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0,
                     },
                     gyro: GyroData {
-                        x: state.gyro.x,
-                        y: state.gyro.y,
-                        z: state.gyro.z,
+                        x: update.gyro.x,
+                        y: update.gyro.y,
+                        z: update.gyro.z,
                     },
                 },
-                state.timestamp,
+                update.timestamp,
             ))
         } else {
             Err(CanonicalError {
@@ -122,7 +122,8 @@ impl ImuTrait for CedarBno085Wrapper {
 
     async fn get_jerk_magnitude(&self) -> Result<(f64, SystemTime), CanonicalError> {
         if let Some(state) = self.engine.get_latest_state() {
-            Ok((state.jerk_magnitude, state.timestamp))
+            // Gyro-only implementation, jerk is 0.0
+            Ok((0.0, state.timestamp))
         } else {
             Err(CanonicalError {
                 code: CanonicalErrorCode::Unavailable,
@@ -143,20 +144,13 @@ impl ImuTrait for CedarBno085Wrapper {
     }
 
     fn get_model(&self) -> String {
-        "BNO085".to_string()
+        "Generic/Olive-IMU".to_string()
     }
 
-    fn start(&self) {
-        // The BNO085 engine is started during wrapper construction in this implementation,
-        // so start() is a no-op here.
-    }
+    fn start(&self) {}
 
     fn save_state(&self) -> Result<(), CanonicalError> {
-        self.engine
-            .save_calibration_sync()
-            .map_err(|e| CanonicalError {
-                code: CanonicalErrorCode::Internal,
-                message: e,
-            })
+        // Handled automatically by the persistent storage trait inside olive-imu
+        Ok(())
     }
 }

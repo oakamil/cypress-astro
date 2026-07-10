@@ -3,17 +3,12 @@
 //
 // Note: This implementation is intended for aarch64 only.
 
-mod cypress_sky;
-
 use std::{path::Path, sync::Arc};
 
-use cypress_imu::{
-    bno085::{Bno085Imu, ImuRotationMode},
-    cedar_bno085::CedarBno085Wrapper,
-};
-use cypress_sky::CypressSky;
+use cypress_imu::cedar_imu::CedarImuWrapper;
 use cypress_solver::Tetra3Solver;
 use image::GrayImage;
+use olive_imu::{Imu, bmi160::Bmi160Device, bno085::Bno085Device};
 use pico_args::Arguments;
 use tetra3::Solver;
 use tokio::sync::Mutex;
@@ -23,46 +18,45 @@ use cedar_server::cedar_server::server_main;
 
 use std::arch::aarch64::*;
 
-
-
 unsafe fn unpack_neon(s_ptr: *const u8, d_ptr: *mut u8, total_pixels: usize) -> (usize, usize) {
     unsafe {
-    let mask0 = vld1q_u8([0, 1, 2, 3, 5, 6, 7, 8, 10, 11, 12, 13, 15, 16, 17, 18].as_ptr());
-    let mask1 = vld1q_u8([4, 5, 6, 7, 9, 10, 11, 12, 14, 15, 16, 17, 19, 20, 21, 22].as_ptr());
-    let mask2 = vld1q_u8([8, 9, 10, 11, 13, 14, 15, 16, 18, 19, 20, 21, 23, 24, 25, 26].as_ptr());
-    let mask3 = vld1q_u8(
-        [
-            12, 13, 14, 15, 17, 18, 19, 20, 22, 23, 24, 25, 27, 28, 29, 30,
-        ]
-        .as_ptr(),
-    );
+        let mask0 = vld1q_u8([0, 1, 2, 3, 5, 6, 7, 8, 10, 11, 12, 13, 15, 16, 17, 18].as_ptr());
+        let mask1 = vld1q_u8([4, 5, 6, 7, 9, 10, 11, 12, 14, 15, 16, 17, 19, 20, 21, 22].as_ptr());
+        let mask2 =
+            vld1q_u8([8, 9, 10, 11, 13, 14, 15, 16, 18, 19, 20, 21, 23, 24, 25, 26].as_ptr());
+        let mask3 = vld1q_u8(
+            [
+                12, 13, 14, 15, 17, 18, 19, 20, 22, 23, 24, 25, 27, 28, 29, 30,
+            ]
+            .as_ptr(),
+        );
 
-    let mut in_x = 0;
-    let mut out_x = 0;
+        let mut in_x = 0;
+        let mut out_x = 0;
 
-    // Process 64 pixels (80 bytes input, 64 bytes output) per iteration
-    let neon_iters = total_pixels / 64;
-    for _ in 0..neon_iters {
-        let v0 = vld1q_u8(s_ptr.add(in_x));
-        let v1 = vld1q_u8(s_ptr.add(in_x + 16));
-        let v2 = vld1q_u8(s_ptr.add(in_x + 32));
-        let v3 = vld1q_u8(s_ptr.add(in_x + 48));
-        let v4 = vld1q_u8(s_ptr.add(in_x + 64));
+        // Process 64 pixels (80 bytes input, 64 bytes output) per iteration
+        let neon_iters = total_pixels / 64;
+        for _ in 0..neon_iters {
+            let v0 = vld1q_u8(s_ptr.add(in_x));
+            let v1 = vld1q_u8(s_ptr.add(in_x + 16));
+            let v2 = vld1q_u8(s_ptr.add(in_x + 32));
+            let v3 = vld1q_u8(s_ptr.add(in_x + 48));
+            let v4 = vld1q_u8(s_ptr.add(in_x + 64));
 
-        let p0 = vqtbl2q_u8(uint8x16x2_t(v0, v1), mask0);
-        let p1 = vqtbl2q_u8(uint8x16x2_t(v1, v2), mask1);
-        let p2 = vqtbl2q_u8(uint8x16x2_t(v2, v3), mask2);
-        let p3 = vqtbl2q_u8(uint8x16x2_t(v3, v4), mask3);
+            let p0 = vqtbl2q_u8(uint8x16x2_t(v0, v1), mask0);
+            let p1 = vqtbl2q_u8(uint8x16x2_t(v1, v2), mask1);
+            let p2 = vqtbl2q_u8(uint8x16x2_t(v2, v3), mask2);
+            let p3 = vqtbl2q_u8(uint8x16x2_t(v3, v4), mask3);
 
-        vst1q_u8(d_ptr.add(out_x), p0);
-        vst1q_u8(d_ptr.add(out_x + 16), p1);
-        vst1q_u8(d_ptr.add(out_x + 32), p2);
-        vst1q_u8(d_ptr.add(out_x + 48), p3);
+            vst1q_u8(d_ptr.add(out_x), p0);
+            vst1q_u8(d_ptr.add(out_x + 16), p1);
+            vst1q_u8(d_ptr.add(out_x + 32), p2);
+            vst1q_u8(d_ptr.add(out_x + 48), p3);
 
-        in_x += 80;
-        out_x += 64;
-    }
-    (in_x, out_x)
+            in_x += 80;
+            out_x += 64;
+        }
+        (in_x, out_x)
     }
 }
 
@@ -72,29 +66,30 @@ unsafe fn unpack_neon_12bit(
     total_pixels: usize,
 ) -> (usize, usize) {
     unsafe {
-    let mask0 = vld1q_u8([0, 1, 3, 4, 6, 7, 9, 10, 12, 13, 15, 16, 18, 19, 21, 22].as_ptr());
-    let mask1 = vld1q_u8([8, 9, 11, 12, 14, 15, 17, 18, 20, 21, 23, 24, 26, 27, 29, 30].as_ptr());
+        let mask0 = vld1q_u8([0, 1, 3, 4, 6, 7, 9, 10, 12, 13, 15, 16, 18, 19, 21, 22].as_ptr());
+        let mask1 =
+            vld1q_u8([8, 9, 11, 12, 14, 15, 17, 18, 20, 21, 23, 24, 26, 27, 29, 30].as_ptr());
 
-    let mut in_x = 0;
-    let mut out_x = 0;
+        let mut in_x = 0;
+        let mut out_x = 0;
 
-    // Process 32 pixels (48 bytes input, 32 bytes output) per iteration
-    let neon_iters = total_pixels / 32;
-    for _ in 0..neon_iters {
-        let v0 = vld1q_u8(s_ptr.add(in_x));
-        let v1 = vld1q_u8(s_ptr.add(in_x + 16));
-        let v2 = vld1q_u8(s_ptr.add(in_x + 32));
+        // Process 32 pixels (48 bytes input, 32 bytes output) per iteration
+        let neon_iters = total_pixels / 32;
+        for _ in 0..neon_iters {
+            let v0 = vld1q_u8(s_ptr.add(in_x));
+            let v1 = vld1q_u8(s_ptr.add(in_x + 16));
+            let v2 = vld1q_u8(s_ptr.add(in_x + 32));
 
-        let p0 = vqtbl2q_u8(uint8x16x2_t(v0, v1), mask0);
-        let p1 = vqtbl2q_u8(uint8x16x2_t(v1, v2), mask1);
+            let p0 = vqtbl2q_u8(uint8x16x2_t(v0, v1), mask0);
+            let p1 = vqtbl2q_u8(uint8x16x2_t(v1, v2), mask1);
 
-        vst1q_u8(d_ptr.add(out_x), p0);
-        vst1q_u8(d_ptr.add(out_x + 16), p1);
+            vst1q_u8(d_ptr.add(out_x), p0);
+            vst1q_u8(d_ptr.add(out_x + 16), p1);
 
-        in_x += 48;
-        out_x += 32;
-    }
-    (in_x, out_x)
+            in_x += 48;
+            out_x += 32;
+        }
+        (in_x, out_x)
     }
 }
 
@@ -377,36 +372,7 @@ fn main() {
          See LICENSE.md at https://github.com/smroid/cedar-server",
         /*flutter_app_path=*/ "../cedar/cedar-aim/cedar_flutter/build/web",
         /*get_dependencies=*/
-        |mut pargs: Arguments| {
-            // Parse the IMU rotation mode argument (-i or --imu-rotation-mode)
-            // Available modes:
-            // 1: Standard Rotation Mode (9-axis, default)
-            // 2: Game Rotation Mode (6-axis, no compass)
-            // 3: AR/VR Stabilized Rotation Mode (9-axis, stabilized)
-            // 4: AR/VR Stabilized Game Rotation Mode (6-axis, stabilized)
-            // 5: Gyro Mode (pure gyro integration)
-            // 6: GyroHybrid Mode (9-axis Roll/Yaw + Gyro Pitch)
-            let mode_val: u8 = pargs
-                .opt_value_from_str(["-i", "--imu-rotation-mode"])
-                .unwrap_or(None)
-                .unwrap_or(1); // Default to 1 (Standard) if not provided
-
-            let rotation_mode = match mode_val {
-                1 => ImuRotationMode::Standard,
-                2 => ImuRotationMode::Game,
-                3 => ImuRotationMode::ArvrStabilized,
-                4 => ImuRotationMode::ArvrStabilizedGame,
-                5 => ImuRotationMode::Gyro,
-                6 => ImuRotationMode::GyroHybrid,
-                _ => {
-                    println!(
-                        "Invalid IMU rotation mode provided ({}). Defaulting to Standard (1).",
-                        mode_val
-                    );
-                    ImuRotationMode::Standard
-                }
-            };
-
+        |_pargs: Arguments| {
             let db_path = Path::new("../cedar/data/default_database.npz");
             let solver = Tetra3Solver::new(
                 Solver::load_database(db_path).expect("Failed to load Tetra3 database"),
@@ -414,21 +380,71 @@ fn main() {
             let solver_arc: Arc<Mutex<dyn SolverTrait + Send + Sync>> =
                 Arc::new(Mutex::new(solver));
 
-            println!("Initializing BNO085 IMU over I2C...");
-            let imu: Option<Arc<Mutex<dyn ImuTrait + Send>>> = match Bno085Imu::start(rotation_mode)
-            {
-                Ok(imu) => {
-                    println!("IMU successfully initialized!");
-                    let cedar_imu = CedarBno085Wrapper { engine: imu };
-                    Some(Arc::new(Mutex::new(cedar_imu)))
+            println!("Probing I2C bus for IMU sensors...");
+
+            let try_init = |name: &str,
+                            result: Option<Arc<Mutex<dyn ImuTrait + Send>>>|
+             -> Option<Arc<Mutex<dyn ImuTrait + Send>>> {
+                if result.is_some() {
+                    println!("{} successfully initialized!", name);
                 }
-                Err(_) => {
-                    println!("Could not start BNO085 IMU");
-                    None
-                }
+                result
             };
-            let cedar_sky = Arc::new(Mutex::new(CypressSky::new()));
-            (Some(cedar_sky), None, imu, None, Some(solver_arc))
+
+            let imu: Option<Arc<Mutex<dyn ImuTrait + Send>>> = None
+                .or_else(|| {
+                    Bno085Device::new(10, 0x4B)
+                        .ok()
+                        .and_then(|device| {
+                            Imu::start(device, None).ok().map(|engine| {
+                                let wrapper = CedarImuWrapper::new(Arc::new(engine));
+
+                                Arc::new(Mutex::new(wrapper)) as Arc<Mutex<dyn ImuTrait + Send>>
+                            })
+                        })
+                        .and_then(|r| try_init("BNO085 (0x4B)", Some(r)))
+                })
+                .or_else(|| {
+                    Bno085Device::new(10, 0x4A)
+                        .ok()
+                        .and_then(|device| {
+                            Imu::start(device, None).ok().map(|engine| {
+                                let wrapper = CedarImuWrapper::new(Arc::new(engine));
+
+                                Arc::new(Mutex::new(wrapper)) as Arc<Mutex<dyn ImuTrait + Send>>
+                            })
+                        })
+                        .and_then(|r| try_init("BNO085 (0x4A)", Some(r)))
+                })
+                .or_else(|| {
+                    Bmi160Device::new(0x68)
+                        .ok()
+                        .and_then(|device| {
+                            Imu::start(device, None).ok().map(|engine| {
+                                let wrapper = CedarImuWrapper::new(Arc::new(engine));
+
+                                Arc::new(Mutex::new(wrapper)) as Arc<Mutex<dyn ImuTrait + Send>>
+                            })
+                        })
+                        .and_then(|r| try_init("BMI160 (0x68)", Some(r)))
+                })
+                .or_else(|| {
+                    Bmi160Device::new(0x69)
+                        .ok()
+                        .and_then(|device| {
+                            Imu::start(device, None).ok().map(|engine| {
+                                let wrapper = CedarImuWrapper::new(Arc::new(engine));
+
+                                Arc::new(Mutex::new(wrapper)) as Arc<Mutex<dyn ImuTrait + Send>>
+                            })
+                        })
+                        .and_then(|r| try_init("BMI160 (0x69)", Some(r)))
+                });
+
+            if imu.is_none() {
+                println!("No IMU sensor found on standard I2C addresses. Running without IMU.");
+            }
+            (None, None, imu, None, Some(solver_arc))
         },
         Some(2),
     );
