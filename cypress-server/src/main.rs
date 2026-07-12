@@ -391,12 +391,15 @@ fn main() {
                 result
             };
 
+            let imu_storage: Option<Arc<dyn olive_imu::PersistentStorage>> =
+                Some(Arc::new(olive_imu::FileStorage::new(std::path::PathBuf::from("."))));
+
             let imu: Option<Arc<Mutex<dyn ImuTrait + Send>>> = None
                 .or_else(|| {
-                    Bno085Device::new(10, 0x4B)
+                    Bno085Device::new(10, 0x4B, true)
                         .ok()
                         .and_then(|device| {
-                            Imu::start(device, None).ok().map(|engine| {
+                            Imu::start(device, imu_storage.clone()).ok().map(|engine| {
                                 let wrapper = CedarImuWrapper::new(Arc::new(engine));
 
                                 Arc::new(Mutex::new(wrapper)) as Arc<Mutex<dyn ImuTrait + Send>>
@@ -405,10 +408,10 @@ fn main() {
                         .and_then(|r| try_init("BNO085 (0x4B)", Some(r)))
                 })
                 .or_else(|| {
-                    Bno085Device::new(10, 0x4A)
+                    Bno085Device::new(10, 0x4A, true)
                         .ok()
                         .and_then(|device| {
-                            Imu::start(device, None).ok().map(|engine| {
+                            Imu::start(device, imu_storage.clone()).ok().map(|engine| {
                                 let wrapper = CedarImuWrapper::new(Arc::new(engine));
 
                                 Arc::new(Mutex::new(wrapper)) as Arc<Mutex<dyn ImuTrait + Send>>
@@ -420,7 +423,7 @@ fn main() {
                     Bmi160Device::new(0x68)
                         .ok()
                         .and_then(|device| {
-                            Imu::start(device, None).ok().map(|engine| {
+                            Imu::start(device, imu_storage.clone()).ok().map(|engine| {
                                 let wrapper = CedarImuWrapper::new(Arc::new(engine));
 
                                 Arc::new(Mutex::new(wrapper)) as Arc<Mutex<dyn ImuTrait + Send>>
@@ -432,7 +435,7 @@ fn main() {
                     Bmi160Device::new(0x69)
                         .ok()
                         .and_then(|device| {
-                            Imu::start(device, None).ok().map(|engine| {
+                            Imu::start(device, imu_storage.clone()).ok().map(|engine| {
                                 let wrapper = CedarImuWrapper::new(Arc::new(engine));
 
                                 Arc::new(Mutex::new(wrapper)) as Arc<Mutex<dyn ImuTrait + Send>>
