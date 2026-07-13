@@ -1,68 +1,34 @@
 // Required Notice: Copyright (c) 2026 Omair Kamil
 // See LICENSE file in root directory for license terms.
 
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tokio::time;
 
 use cedar_elements::imu_trait::{HorizonCoordinates, ImuTrait, TrackerState};
-use cypress_imu::{
-    bno085::{Bno085Imu, ImuRotationMode},
-    cedar_bno085::CedarBno085Wrapper,
-};
+use cypress_imu::cedar_imu::CedarImuWrapper;
 use env_logger;
-use pico_args::Arguments;
+use olive_imu::{Imu, bno085::Bno085Device};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
-    // Parse command line arguments
-    let mut pargs = Arguments::from_env();
+    println!("Initializing gyro-only BNO085 over I2C...");
 
-    // Parse the IMU rotation mode argument (-i or --imu-rotation-mode)
-    // Available modes:
-    // 1: Standard Rotation Mode (9-axis, default)
-    // 2: Game Rotation Mode (6-axis, no compass)
-    // 3: AR/VR Stabilized Rotation Mode (9-axis, stabilized)
-    // 4: AR/VR Stabilized Game Rotation Mode (6-axis, stabilized)
-    // 5: Gyro Mode (pure gyro integration)
-    // 6: GyroHybrid Mode (9-axis Roll/Yaw + Gyro Pitch)
-    let mode_val: u8 = pargs
-        .opt_value_from_str(["-i", "--imu-rotation-mode"])
-        .unwrap_or(None)
-        .unwrap_or(1); // Default to 1 (Standard) if not provided
+    let device = Bno085Device::new(10, 0x4B)?;
+    let engine = Imu::start(device, None)?;
+    let imu = CedarImuWrapper::new(Arc::new(engine));
 
-    let rotation_mode = match mode_val {
-        1 => ImuRotationMode::Standard,
-        2 => ImuRotationMode::Game,
-        3 => ImuRotationMode::ArvrStabilized,
-        4 => ImuRotationMode::ArvrStabilizedGame,
-        5 => ImuRotationMode::Gyro,
-        6 => ImuRotationMode::GyroHybrid,
-        _ => {
-            println!(
-                "Invalid IMU rotation mode provided ({}). Defaulting to Standard (1).",
-                mode_val
-            );
-            ImuRotationMode::Standard
-        }
-    };
-
-    println!("Initializing BNO085 over I2C...");
-
-    // Pass the parsed rotation mode instead of the hardcoded boolean
-    let engine = Bno085Imu::start(rotation_mode)?;
-    let imu = CedarBno085Wrapper { engine };
-
-    println!("Waiting for sensor fusion algorithm to converge (3 seconds)...");
+    println!("Waiting for sensor calibration to complete (5 seconds of stability)...");
 
     // We block the plate solve until the IMU drops its 'Lost' state,
-    // which guarantees both hardware initialization and gravity alignment are complete.
+    // which guarantees both hardware initialization and gyro zero-bias are complete.
     while imu.get_tracker_state().await == TrackerState::Lost {
         time::sleep(Duration::from_millis(50)).await;
     }
 
-    println!("IMU successfully initialized and gravity-aligned!");
+    println!("IMU successfully initialized and gyro zero-bias calibrated!");
 
     // 1. Report the initial "True" Camera Pointing
     let initial_pointing = HorizonCoordinates {

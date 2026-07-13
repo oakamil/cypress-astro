@@ -11,6 +11,7 @@ path = "src/main.rs"
 cedar-camera = { path = "../../cedar-camera" }
 cypress-solver = { path = "../cypress-solver" }
 cypress-imu = { path = "../cypress-imu" }
+olive-imu = { path = "../../olive-solve/olive-imu" }
 cedar-elements = { path = "../../cedar-server/elements" }
 cedar-server = { path = "../../cedar-server/server" }
 pico-args = "0.5.0"

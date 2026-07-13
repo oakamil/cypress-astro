@@ -1,14 +1,12 @@
 # cypress-imu
 
-Hardware integration of the BNO085 IMU (Inertial Measurement Unit) for the [Cedar™](https://github.com/smroid/cedar-server) telescope control system.
+Integration of **olive-imu** for the [Cedar™](https://github.com/smroid/cedar-server) telescope control system.
 
 This crate is part of the broader `cypress-astro` workspace.
 
 ## Overview
 
-The `cypress-imu` package provides an implementation of the Cedar™ `ImuTrait` using the BNO085 sensor. This allows the Cedar™ telescope control system to estimate positioning between camera plate-solves.
-
-`cypress-imu` supports standard rotation vector mode (9-axis), game rotation vector mode (6-axis - the magnetometer is disabled), AR/VR stabilized rotation vector mode (9-axis stabilized), and AR/VR stabilized game rotation vectore mode (6-axis stabilized).
+The `cypress-imu` package provides an implementation of the Cedar™ `ImuTrait` using the `olive-imu` library. This allows the Cedar™ telescope control system to estimate positioning between camera plate-solves via data from an inertial measurement unit.
 
 ## Getting Started
 
@@ -16,6 +14,7 @@ The `cypress-imu` package provides an implementation of the Cedar™ `ImuTrait` 
 
 * [Rust / Cargo](https://rustup.rs/)
 * A connected BNO085 IMU hardware module via I2C. Only 4 physical connections are needed as the sensor's interrupt and reset pins aren't used.
+* OR a connected BMI160 IMU hardware module via I2C.
 
 ### Building
 
