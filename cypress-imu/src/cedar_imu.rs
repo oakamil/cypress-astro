@@ -51,7 +51,7 @@ impl ImuTrait for CedarImuWrapper {
         timestamp: &SystemTime,
     ) -> Result<HorizonCoordinates, CanonicalError> {
         match self.engine.get_estimated_pointing(timestamp).await {
-            Ok(coords) => Ok(HorizonCoordinates {
+            Ok((coords, _is_imu_estimate)) => Ok(HorizonCoordinates {
                 zenith_roll_angle: coords.roll,
                 altitude: coords.pitch,
                 azimuth: coords.yaw,
