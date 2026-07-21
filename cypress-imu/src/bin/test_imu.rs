@@ -10,14 +10,22 @@ use cypress_imu::cedar_imu::CedarImuWrapper;
 use env_logger;
 use olive_imu::{Imu, bno085::Bno085Device};
 
+use pico_args::Arguments;
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
+    let mut pargs = Arguments::from_env();
+    let use_calibrated: bool = pargs.contains(["-c", "--calibrated"]);
+
     println!("Initializing gyro-only BNO085 over I2C...");
 
-    let device = Bno085Device::new(10, 0x4B)?;
-    let engine = Imu::start(device, None)?;
+    let device = Bno085Device::new(10, 0x4B, use_calibrated)?;
+    let imu_storage: Option<std::sync::Arc<dyn olive_imu::PersistentStorage>> =
+        Some(std::sync::Arc::new(olive_imu::FileStorage::new(std::path::PathBuf::from("."))));
+
+    let engine = Imu::start(device, imu_storage)?;
     let imu = CedarImuWrapper::new(Arc::new(engine));
 
     println!("Waiting for sensor calibration to complete (5 seconds of stability)...");
