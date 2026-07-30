@@ -36,13 +36,13 @@ impl ImuTrait for CedarImuWrapper {
             yaw: camera_pointing.azimuth,
         };
 
-        self.engine.update_anchor(&mount_coords, timestamp).await;
+        self.engine.update_anchor(&mount_coords, timestamp);
     }
 
-    async fn report_camera_pointing_lost(&self, _timestamp: &SystemTime) {}
+    async fn report_camera_pointing_lost(&self) {}
 
     async fn reset(&self) {
-        self.engine.reset_anchors().await;
+        self.engine.reset_anchors();
         self.engine.reset_bias_calibration();
     }
 
@@ -50,7 +50,7 @@ impl ImuTrait for CedarImuWrapper {
         &self,
         timestamp: &SystemTime,
     ) -> Result<HorizonCoordinates, CanonicalError> {
-        match self.engine.get_estimated_pointing(timestamp).await {
+        match self.engine.get_estimated_pointing(timestamp) {
             Ok((coords, _is_imu_estimate)) => Ok(HorizonCoordinates {
                 zenith_roll_angle: coords.roll,
                 altitude: coords.pitch,
@@ -82,7 +82,7 @@ impl ImuTrait for CedarImuWrapper {
             z: bias_vec.z,
         });
 
-        let metrics = self.engine.get_calibration_metrics().await;
+        let metrics = self.engine.get_calibration_metrics();
         let calibration = metrics.map(|m| TransformCalibration {
             transform_error_fraction: m.transform_error_fraction,
             camera_view_gyro_axis: m.camera_view_gyro_axis,

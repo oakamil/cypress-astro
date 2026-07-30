@@ -391,8 +391,9 @@ fn main() {
                 result
             };
 
-            let imu_storage: Option<Arc<dyn olive_imu::PersistentStorage>> =
-                Some(Arc::new(olive_imu::FileStorage::new(std::path::PathBuf::from("."))));
+            let imu_storage: Option<Arc<dyn olive_imu::PersistentStorage>> = Some(Arc::new(
+                olive_imu::FileStorage::new(std::path::PathBuf::from(".")),
+            ));
 
             let imu: Option<Arc<Mutex<dyn ImuTrait + Send>>> = None
                 .or_else(|| {
