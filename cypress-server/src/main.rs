@@ -8,13 +8,17 @@ use std::{path::Path, sync::Arc};
 use cypress_imu::cedar_imu::CedarImuWrapper;
 use cypress_solver::Tetra3Solver;
 use image::GrayImage;
-use olive_imu::{Imu, bmi160::Bmi160Device, bno085::Bno085Device};
+use olive_imu::{Imu, bmi160::Bmi160Device, bno055::Bno055Device, bno085::Bno085Device};
 use pico_args::Arguments;
 use tetra3::Solver;
 use tokio::sync::Mutex;
 
-use cedar_elements::{image_utils::ImageRotator, imu_trait::ImuTrait, solver_trait::SolverTrait};
+use cedar_elements::{
+    cedar_sky_trait::CedarSkyTrait, image_utils::ImageRotator, imu_trait::ImuTrait,
+    solver_trait::SolverTrait,
+};
 use cedar_server::cedar_server::server_main;
+use cypress_catalog::CypressCatalog;
 
 use std::arch::aarch64::*;
 
@@ -380,6 +384,13 @@ fn main() {
             let solver_arc: Arc<Mutex<dyn SolverTrait + Send + Sync>> =
                 Arc::new(Mutex::new(solver));
 
+            let catalog_path = "../cedar/data/catalog.db";
+            let catalog = CypressCatalog::new(catalog_path, Some("../cedar/data/de421.bsp"));
+
+            // Start the comet update listener on port 8081
+            catalog.start_comet_upload_server(8081);
+            let catalog_arc: Arc<Mutex<dyn CedarSkyTrait + Send>> = Arc::new(Mutex::new(catalog));
+
             println!("Probing I2C bus for IMU sensors...");
 
             let try_init = |name: &str,
@@ -421,6 +432,30 @@ fn main() {
                         .and_then(|r| try_init("BNO085 (0x4A)", Some(r)))
                 })
                 .or_else(|| {
+                    Bno055Device::new(10, 0x28)
+                        .ok()
+                        .and_then(|device| {
+                            Imu::start(device, imu_storage.clone()).ok().map(|engine| {
+                                let wrapper = CedarImuWrapper::new(Arc::new(engine));
+
+                                Arc::new(Mutex::new(wrapper)) as Arc<Mutex<dyn ImuTrait + Send>>
+                            })
+                        })
+                        .and_then(|r| try_init("BNO055 (0x28)", Some(r)))
+                })
+                .or_else(|| {
+                    Bno055Device::new(10, 0x29)
+                        .ok()
+                        .and_then(|device| {
+                            Imu::start(device, imu_storage.clone()).ok().map(|engine| {
+                                let wrapper = CedarImuWrapper::new(Arc::new(engine));
+
+                                Arc::new(Mutex::new(wrapper)) as Arc<Mutex<dyn ImuTrait + Send>>
+                            })
+                        })
+                        .and_then(|r| try_init("BNO055 (0x29)", Some(r)))
+                })
+                .or_else(|| {
                     Bmi160Device::new(0x68)
                         .ok()
                         .and_then(|device| {
@@ -448,7 +483,7 @@ fn main() {
             if imu.is_none() {
                 println!("No IMU sensor found on standard I2C addresses. Running without IMU.");
             }
-            (None, None, imu, None, Some(solver_arc))
+            (Some(catalog_arc), None, imu, None, Some(solver_arc))
         },
         Some(2),
     );

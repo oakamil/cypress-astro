@@ -104,6 +104,7 @@ impl SolverTrait for Tetra3Solver {
             return_rotation_matrix: extension.return_rotation_matrix,
             target_pixel,
             target_sky_coord,
+            ..Default::default()
         };
 
         let result = solver.solve(&centroids_array, (height as f64, width as f64), options);

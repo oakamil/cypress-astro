@@ -45,30 +45,21 @@ $HOME/cedar/bin/cypress-server
 
 ### IMU Integration
 
-If an IMU is available `cypress-server` will utilize the IMU in standard 9-axis mode by default. To use a different mode include the -i or --imu-rotation-mode argument.
+`cypress-server` will automatically detect and use the following IMU sensors:
 
-```
-$HOME/cedar/bin/cypress-server -i 2
-```
-
-| Mode | Description | Measured Error |
-| ---| --- | --- |
-| 1 | Standard 9-axis rotation vector | 2.3 deg |
-| 2 | Game rotation vector (6-axis, magnetometer is ignored) | 3.5 deg |
-| 3 | AR/VR stabilized 9-axis rotation vector | 2.4 deg |
-| 4 | AR/VR stabilized game rotation vector (6-axis) | 3.6 deg |
-
-Standard mode is recommended unless magnetic interference is present in the environment. The measured error above is from ~15 short to medium slews after calibration.
+* Bosch BMI160
+* CEVA BNO085
+* CEVA BNO055
 
 ## License
 
-This project is licensed under the Apache License 2.0.
+This project is licensed under the GNU General Public License v3.0.
 
 See `LICENSE.md` file for full details.
 
 ### Third-Party Licenses
 
-While `cypress-server` itself is licensed under the Apache License 2.0, it integrates with and depends on several external projects (including but not limited to `cedar-server` and `olive-solve`). Each of these third-party projects is governed by its own respective licensing terms. Users are responsible for reviewing and complying with the individual licenses of any integrated components, tools, or dependencies.
+While `cypress-server` itself is licensed under the GNU General Public License v3.0, it integrates with and depends on several external projects (including but not limited to `cedar-server` and `olive-solve`). Each of these third-party projects is governed by its own respective licensing terms. Users are responsible for reviewing and complying with the individual licenses of any integrated components, tools, or dependencies.
 
 ## Disclaimer
 

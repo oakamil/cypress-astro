@@ -10,7 +10,7 @@ cedar-elements = { path = "../../cedar-server/elements" }
 ndarray = "0.17.1"
 prost = "0.12.3"
 prost-types = "0.12.3"
-tetra3 = { git = "https://github.com/oakamil/olive-solve" }
+tetra3 = { git = "https://github.com/oakamil/olive-solve", branch = "v2" }
 tokio = "1.48.0"
 zip = "0.6"
 

@@ -9,13 +9,13 @@ path = "src/main.rs"
 
 [dependencies]
 cedar-camera = { path = "../../cedar-camera", features = ["rpi"] }
-cypress-solver = { path = "../cypress-solver" }
-cypress-imu = { path = "../cypress-imu" }
-olive-imu = { path = "../../olive-solve/olive-imu" }
 cedar-elements = { path = "../../cedar-server/elements" }
 cedar-server = { path = "../../cedar-server/server" }
+cypress-catalog = { path = "../cypress-catalog" }
+cypress-solver = { path = "../cypress-solver" }
+cypress-imu = { path = "../cypress-imu" }
+image = "0.25.10"
+olive-imu = { git = "https://github.com/oakamil/olive-solve.git", branch = "v2" }
 pico-args = "0.5.0"
 tokio = { version = "1.0", features = ["rt-multi-thread", "sync"] }
-tetra3 = { git = "https://github.com/oakamil/olive-solve.git" }
-image = "0.25.10"
-cypress-catalog = { path = "../cypress-catalog" }
+tetra3 = { git = "https://github.com/oakamil/olive-solve.git", branch = "v2" }

@@ -49,13 +49,13 @@ cargo test --release tetra3_solver -- --nocapture
 
 ## License
 
-This project is licensed under the Apache License 2.0.
+This project is licensed under the GNU General Public License v3.0.
 
 See the root `LICENSE.md` file for full details.
 
 ### Third-Party Licenses
 
-While cypress-solver itself is licensed under the Apache License 2.0, it integrates with and depends on several external projects (including but not limited to `cedar-server`, `tetra3_server`, and `olive-solve`). Each of these third-party projects is governed by its own respective licensing terms. Users are responsible for reviewing and complying with the individual licenses of any integrated components, tools, or dependencies.
+While cypress-solver itself is licensed under the GNU General Public License v3.0, it integrates with and depends on several external projects (including but not limited to `cedar-server`, `tetra3_server`, and `olive-solve`). Each of these third-party projects is governed by its own respective licensing terms. Users are responsible for reviewing and complying with the individual licenses of any integrated components, tools, or dependencies.
 
 ## Disclaimer
 
