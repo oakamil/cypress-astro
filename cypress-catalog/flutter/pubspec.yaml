@@ -1,0 +1,17 @@
+name: cypress_catalog
+description: Custom catalog features and UI wrapper for cedar_flutter
+environment:
+  sdk: ">=3.1.0 <4.0.0"
+dependencies:
+  flutter:
+    sdk: flutter
+  cedar_flutter:
+    path: ../../../cedar-aim/cedar_flutter
+
+  http: ^1.2.1
+  file_selector: ^1.1.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/galaxy_white.png

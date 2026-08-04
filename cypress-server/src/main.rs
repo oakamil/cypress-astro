@@ -8,7 +8,9 @@ use std::{path::Path, sync::Arc};
 use cypress_imu::cedar_imu::CedarImuWrapper;
 use cypress_solver::Tetra3Solver;
 use image::GrayImage;
-use olive_imu::{Imu, bmi160::Bmi160Device, bno055::Bno055Device, bno085::Bno085Device};
+use olive_imu::{
+    Imu, bmi160::Bmi160Device, bno055::Bno055Device, bno085::Bno085Device, mpuxxxx::MpuXxxxDevice,
+};
 use pico_args::Arguments;
 use tetra3::Solver;
 use tokio::sync::Mutex;
@@ -478,6 +480,30 @@ fn main() {
                             })
                         })
                         .and_then(|r| try_init("BMI160 (0x69)", Some(r)))
+                })
+                .or_else(|| {
+                    MpuXxxxDevice::new(10, 0x68)
+                        .ok()
+                        .and_then(|device| {
+                            Imu::start(device, imu_storage.clone()).ok().map(|engine| {
+                                let wrapper = CedarImuWrapper::new(Arc::new(engine));
+
+                                Arc::new(Mutex::new(wrapper)) as Arc<Mutex<dyn ImuTrait + Send>>
+                            })
+                        })
+                        .and_then(|r| try_init("MPU Series (0x68)", Some(r)))
+                })
+                .or_else(|| {
+                    MpuXxxxDevice::new(10, 0x69)
+                        .ok()
+                        .and_then(|device| {
+                            Imu::start(device, imu_storage.clone()).ok().map(|engine| {
+                                let wrapper = CedarImuWrapper::new(Arc::new(engine));
+
+                                Arc::new(Mutex::new(wrapper)) as Arc<Mutex<dyn ImuTrait + Send>>
+                            })
+                        })
+                        .and_then(|r| try_init("MPU Series (0x69)", Some(r)))
                 });
 
             if imu.is_none() {
@@ -486,5 +512,6 @@ fn main() {
             (Some(catalog_arc), None, imu, None, Some(solver_arc))
         },
         Some(2),
+        Some("Cypress"),
     );
 }

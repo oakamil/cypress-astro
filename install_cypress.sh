@@ -81,7 +81,7 @@ sudo rm -rf $CEDAR_AIM_DIR/*
 
 echo
 echo "Copying Cedar-Aim"
-sudo cp -R ../cedar-aim/cedar_flutter/build/web $CEDAR_AIM_DIR/.
+sudo cp -R cypress-catalog/flutter/build/web $CEDAR_AIM_DIR/.
 
 if [ "$SKIP_BOOT" = false ]; then
     echo
