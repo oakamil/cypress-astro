@@ -1,15 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:cedar_flutter/client_main.dart';
-import 'draw_catalog.dart';
 import 'catalog_browser.dart';
+import 'draw_catalog.dart';
+import 'goto_target.dart';
+import 'object_info.dart';
 
 void main() {
   clientMain(
       /*drawCatalogEntries=*/ drawCatalogEntries,
       /*showCatalogBrowser=*/ showCatalogBrowser,
-      /*objectInfoDialog=*/ null,
+      /*objectInfoDialog=*/ showObjectInfoDialog,
       /*wifiAccessPointDialog=*/ null,
-      /*gotoRaDecDialog=*/ null,
+      /*gotoRaDecDialog=*/ gotoRaDecDialog,
       /*updaterInfo=*/ null,
       /*updateServiceAvailable=*/ false);
 }
