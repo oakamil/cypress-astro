@@ -23,6 +23,7 @@ fi
 MOUNT_POINT="$HOME/mnt/rpi_root"
 BOOT_MOUNT_POINT="$HOME/mnt/rpi_boot"
 BIN_DIR=$MOUNT_POINT/home/cedar/cedar/bin
+DATA_DIR=$MOUNT_POINT/home/cedar/cedar/data
 CEDAR_AIM_DIR=$MOUNT_POINT/home/cedar/cedar/cedar-aim/cedar_flutter/build
 
 echo
@@ -52,7 +53,8 @@ echo "Updating Cedar service to run Cypress server"
 sudo bash -c "cat > $MOUNT_POINT/lib/systemd/system/cedar.service <<EOF
 [Unit]
 Description=Cedar Server
-After=NetworkManager.service network-online.target cedar-ap-setup.service
+After=NetworkManager.service network-online.target cedar-ap-setup.service cypress-updater.service
+Requires=cypress-updater.service
 Wants=NetworkManager.service network-online.target
 Wants=cedar-ap-setup.service
 
@@ -60,7 +62,7 @@ Wants=cedar-ap-setup.service
 User=cedar
 WorkingDirectory=/home/cedar/run
 Type=simple
-ExecStart=/bin/bash -c '/home/cedar/cedar/bin/cypress-server --min_frame_interval 0.020'
+ExecStart=/bin/bash -c '/home/cedar/cedar/bin/cypress-server'
 
 [Install]
 WantedBy=multi-user.target
@@ -75,13 +77,39 @@ echo "Set caps on Cypress server binary"
 caps="cap_sys_time,cap_dac_override,cap_chown,cap_fowner,cap_net_bind_service+ep"
 sudo setcap "$caps" $BIN_DIR/cypress-server
 
+
+echo
+echo "Copying Cypress updater binary"
+sudo cp updater/cypress_updater.sh $BIN_DIR/.
+
+echo
+echo "Installing Cypress updater service"
+sudo bash -c "cat > $MOUNT_POINT/lib/systemd/system/cypress-updater.service <<EOF
+[Unit]
+Description=Cypress Updater Service
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=cedar
+ExecStart=/bin/bash /home/cedar/cedar/bin/cypress_updater.sh
+
+[Install]
+WantedBy=multi-user.target
+EOF"
+
+echo
+echo "Enable Cypress updater service"
+sudo systemctl --root=$MOUNT_POINT enable cypress-updater.service
+
+
 echo
 echo "Removing existing Cedar-Aim"
-sudo rm -rf $CEDAR_AIM_DIR/*
+sudo rm -rf $CEDAR_AIM_DIR
 
 echo
 echo "Copying Cedar-Aim"
-sudo cp -R cypress-catalog/flutter/build/web $CEDAR_AIM_DIR/.
+cp -R cypress-catalog/flutter/build $CEDAR_AIM_DIR
 
 if [ "$SKIP_BOOT" = false ]; then
     echo
@@ -91,8 +119,18 @@ if [ "$SKIP_BOOT" = false ]; then
 
     echo
     echo "Adding camera configuration"
-    #echo "dtoverlay=imx290,clock-frequency=74250000" | sudo tee -a "${BOOT_MOUNT_POINT}/config.txt" > /dev/null
+    echo "dtoverlay=imx290,clock-frequency=74250000" | sudo tee -a "${BOOT_MOUNT_POINT}/config.txt" > /dev/null
 fi
+
+echo
+echo "Copying catalog data files"
+sudo cp cypress-catalog/data/* $DATA_DIR/.
+
+echo
+echo "Enabling HCG for IMX290"
+sudo bash -c "cat > $MOUNT_POINT/etc/modprobe.d/imx290.conf <<EOF
+options imx290 hcg_mode=1
+EOF"
 
 echo
 echo "Unmounting image"

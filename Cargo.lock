@@ -1201,11 +1201,13 @@ dependencies = [
  "cedar-elements 0.1.0",
  "cedar-server",
  "chrono",
+ "log",
  "reqwest 0.13.4",
  "rusqlite",
  "starfield",
  "tiny_http",
  "tokio",
+ "zip",
 ]
 
 [[package]]

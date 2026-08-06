@@ -9,6 +9,7 @@ use cedar_elements::cedar_sky::{
     SelectedCatalogEntry,
 };
 use cedar_elements::cedar_sky_trait::{CedarSkyTrait, LocationInfo};
+use log::{debug, info, warn};
 use rusqlite::{Connection, OpenFlags, params};
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -132,12 +133,16 @@ impl CypressCatalog {
         std::thread::spawn(move || {
             let server = Server::http(format!("0.0.0.0:{}", port)).unwrap();
             for mut request in server.incoming_requests() {
-                eprintln!(
+                info!(
                     "Incoming tiny_http request: {} {}",
                     request.method().as_str(),
                     request.url()
                 );
-                if request.url() == "/update-comets" && request.method().as_str() == "OPTIONS" {
+                if (request.url() == "/update-comets"
+                    || request.url() == "/update-system"
+                    || request.url() == "/restart-system")
+                    && request.method().as_str() == "OPTIONS"
+                {
                     let mut response = Response::empty(200);
                     response.add_header(
                         Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap(),
@@ -155,20 +160,20 @@ impl CypressCatalog {
                     );
                     let _ = request.respond(response);
                 } else if request.url() == "/update-comets" && request.method().as_str() == "POST" {
-                    eprintln!("Received POST /update-comets");
+                    info!("Received POST /update-comets");
                     let mut content = String::new();
                     match request.as_reader().read_to_string(&mut content) {
-                        Ok(len) => eprintln!("Read {} bytes from request", len),
-                        Err(e) => eprintln!("Error reading request: {:?}", e),
+                        Ok(len) => info!("Read {} bytes from request", len),
+                        Err(e) => warn!("Error reading request: {:?}", e),
                     }
 
                     if let Ok(mut conn) = Connection::open(&db_path) {
-                        eprintln!("Opened connection to {}", db_path);
+                        info!("Opened connection to {}", db_path);
                         let tx = conn.transaction();
                         if let Ok(tx) = tx {
-                            eprintln!("Started transaction");
+                            info!("Started transaction");
                             let _ = tx.execute("DELETE FROM comets", []);
-                            eprintln!("Deleted old comets");
+                            info!("Deleted old comets");
 
                             let mut inserted = 0;
                             for (i, line) in content.lines().enumerate() {
@@ -176,7 +181,7 @@ impl CypressCatalog {
                                     continue;
                                 }
                                 if line.len() < 102 {
-                                    eprintln!(
+                                    debug!(
                                         "Skipping line {} because length {} < 102",
                                         i,
                                         line.len()
@@ -186,7 +191,7 @@ impl CypressCatalog {
                                 let h_str = line[91..96].trim();
                                 let k_str = line[96..101].trim();
                                 if h_str.is_empty() || k_str.is_empty() {
-                                    eprintln!("Skipping line {} due to empty H/G params", i);
+                                    debug!("Skipping line {} due to empty H/G params", i);
                                     continue;
                                 }
 
@@ -234,27 +239,95 @@ impl CypressCatalog {
                                 inserted += 1;
                             }
                             match tx.commit() {
-                                Ok(_) => eprintln!(
+                                Ok(_) => info!(
                                     "Committed transaction. Inserted {} comets.",
                                     inserted
                                 ),
-                                Err(e) => eprintln!("Failed to commit transaction: {:?}", e),
+                                Err(e) => warn!("Failed to commit transaction: {:?}", e),
                             }
                         } else {
-                            eprintln!("Failed to start transaction");
+                            warn!("Failed to start transaction");
                         }
                     } else {
-                        eprintln!("Failed to open DB connection to {}", db_path);
+                        warn!("Failed to open DB connection to {}", db_path);
                     }
 
-                    eprintln!("Sending 200 OK response");
+                    info!("Sending 200 OK response");
                     let mut response = Response::from_string("OK");
                     response.add_header(
                         Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap(),
                     );
                     if let Err(e) = request.respond(response) {
-                        eprintln!("Failed to send response: {:?}", e);
+                        warn!("Failed to send response: {:?}", e);
                     }
+                } else if request.url() == "/update-system" && request.method().as_str() == "POST" {
+                    info!("Received POST /update-system");
+                    let tmp_path = std::path::Path::new("/tmp/cypress_update_tmp.zip");
+                    if let Ok(mut dest) = std::fs::File::create(&tmp_path) {
+                        let _ = std::io::copy(&mut request.as_reader(), &mut dest);
+                    }
+
+                    let mut is_valid = false;
+                    if let Ok(file) = std::fs::File::open(&tmp_path) {
+                        if let Ok(mut archive) = zip::ZipArchive::new(file) {
+                            if archive.by_name("apply_update.sh").is_ok() {
+                                is_valid = true;
+                            }
+                        }
+                    }
+
+                    let home = std::env::var("HOME").unwrap_or_else(|_| "/home/cedar".to_string());
+                    let dest_path = std::path::Path::new(&home)
+                        .join("run")
+                        .join("cypress_update.zip");
+
+                    if is_valid {
+                        if let Some(parent) = dest_path.parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
+                        let _ = std::fs::copy(&tmp_path, &dest_path);
+                        let _ = std::fs::remove_file(&tmp_path);
+
+                        let mut response = Response::from_string("OK");
+                        response.add_header(
+                            Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..])
+                                .unwrap(),
+                        );
+                        if let Err(e) = request.respond(response) {
+                            warn!("Failed to send response: {:?}", e);
+                        }
+                    } else {
+                        warn!("Uploaded update file is invalid or missing apply_update.sh");
+                        let _ = std::fs::remove_file(&tmp_path);
+
+                        let mut response =
+                            Response::from_string("Invalid update file");
+                        response.add_header(
+                            Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..])
+                                .unwrap(),
+                        );
+                        if let Err(e) = request.respond(response.with_status_code(400)) {
+                            warn!("Failed to send response: {:?}", e);
+                        }
+                    }
+                } else if request.url() == "/restart-system" && request.method().as_str() == "POST"
+                {
+                    info!("Received POST /restart-system");
+                    let mut response = Response::from_string("OK");
+                    response.add_header(
+                        Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap(),
+                    );
+                    if let Err(e) = request.respond(response) {
+                        warn!("Failed to send response: {:?}", e);
+                    }
+
+                    std::thread::spawn(|| {
+                        std::thread::sleep(std::time::Duration::from_secs(1));
+                        info!("Restarting cedar service...");
+                        let _ = std::process::Command::new("sudo")
+                            .args(["systemctl", "restart", "cedar"])
+                            .spawn();
+                    });
                 } else {
                     let _ =
                         request.respond(Response::from_string("Not Found").with_status_code(404));
@@ -831,7 +904,7 @@ impl CedarSkyTrait for CypressCatalog {
         let conn_guard = self.db.lock().await;
         let conn = conn_guard.as_ref().unwrap();
         let mut stmt = conn.prepare(&query).map_err(|e| {
-            println!("Query prepare error: {}", e);
+            warn!("Query prepare error: {}", e);
             canonical_error::unknown_error("prepare failed")
         })?;
 
@@ -917,7 +990,7 @@ impl CedarSkyTrait for CypressCatalog {
                 Ok(sel_entry)
             })
             .map_err(|e| {
-                println!("Query exec error: {}", e);
+                warn!("Query exec error: {}", e);
                 canonical_error::unknown_error("query failed")
             })?;
 

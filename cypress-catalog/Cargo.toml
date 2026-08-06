@@ -9,8 +9,10 @@ canonical-error = "0.1"
 cedar-elements = { path = "../../cedar-server/elements" }
 cedar-server = { path = "../../cedar-server/server" }
 chrono = "0.4.38"
+log = "0.4.33"
 reqwest = { version = "0.13.4", features = ["blocking"] }
 rusqlite = { version = "0.31.0", features = ["functions"] }
 starfield = "0.10.2"
 tiny_http = "0.12"
 tokio = { version = "1.0", features = ["rt-multi-thread", "sync", "macros"] }
+zip = "0.6"
