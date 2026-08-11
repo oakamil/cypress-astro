@@ -14,15 +14,31 @@ use rusqlite::{Connection, OpenFlags, params};
 use std::sync::Arc;
 use std::time::SystemTime;
 use tiny_http::{Header, Response, Server};
-use tokio::sync::Mutex;
 
+struct CatalogQueryCache {
+    sky_location: Option<CelestialCoord>,
+    max_distance: Option<f64>,
+    min_elevation: Option<f64>,
+    faintest_magnitude: Option<i32>,
+    match_catalog_label: bool,
+    catalog_label: Vec<String>,
+    match_object_type_label: bool,
+    object_type_label: Vec<String>,
+    text_search: Option<String>,
+    ordering: Option<Ordering>,
+    decrowd_distance: Option<f64>,
+    limit_result: Option<usize>,
+    result: (Vec<SelectedCatalogEntry>, usize),
+    timestamp: std::time::Instant,
+}
 pub struct CypressCatalog {
     db_path: String,
-    db: Arc<Mutex<Option<Connection>>>,
+    db: Arc<std::sync::Mutex<Option<Connection>>>,
     catalog_descriptions: std::sync::Mutex<Vec<CatalogDescription>>,
     object_types: std::sync::Mutex<Vec<ObjectType>>,
     constellations: std::sync::Mutex<Vec<Constellation>>,
     bsp_path: Option<String>,
+    query_cache: std::sync::Mutex<Vec<CatalogQueryCache>>,
 }
 
 impl CypressCatalog {
@@ -30,15 +46,16 @@ impl CypressCatalog {
         Self {
             db_path: db_path.to_string(),
             bsp_path: bsp_path.map(|s| s.to_string()),
-            db: Arc::new(Mutex::new(None)),
+            db: Arc::new(std::sync::Mutex::new(None)),
             catalog_descriptions: std::sync::Mutex::new(Vec::new()),
             object_types: std::sync::Mutex::new(Vec::new()),
             constellations: std::sync::Mutex::new(Vec::new()),
+            query_cache: std::sync::Mutex::new(Vec::new()),
         }
     }
 
     pub async fn open(&self) -> Result<(), CanonicalError> {
-        let mut db_lock = self.db.lock().await;
+        let mut db_lock = self.db.lock().unwrap();
         if db_lock.is_none() {
             let conn =
                 Connection::open_with_flags(&self.db_path, OpenFlags::SQLITE_OPEN_READ_WRITE)
@@ -239,10 +256,9 @@ impl CypressCatalog {
                                 inserted += 1;
                             }
                             match tx.commit() {
-                                Ok(_) => info!(
-                                    "Committed transaction. Inserted {} comets.",
-                                    inserted
-                                ),
+                                Ok(_) => {
+                                    info!("Committed transaction. Inserted {} comets.", inserted)
+                                }
                                 Err(e) => warn!("Failed to commit transaction: {:?}", e),
                             }
                         } else {
@@ -300,8 +316,7 @@ impl CypressCatalog {
                         warn!("Uploaded update file is invalid or missing apply_update.sh");
                         let _ = std::fs::remove_file(&tmp_path);
 
-                        let mut response =
-                            Response::from_string("Invalid update file");
+                        let mut response = Response::from_string("Invalid update file");
                         response.add_header(
                             Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..])
                                 .unwrap(),
@@ -419,7 +434,7 @@ impl CedarSkyTrait for CypressCatalog {
 
             let mut asteroids = vec![];
             {
-                let mut conn_guard = db_lock_clone.blocking_lock();
+                let mut conn_guard = db_lock_clone.lock().unwrap();
                 if let Some(conn) = conn_guard.as_mut() {
                     if let Ok(mut stmt) = conn.prepare("SELECT catalog_id, common_name, h, g, epoch, m, peri, node, incl, e, a FROM asteroids") {
                         let asteroid_iter = stmt.query_map([], |row| {
@@ -512,7 +527,7 @@ impl CedarSkyTrait for CypressCatalog {
 
             let mut comets = vec![];
             {
-                let mut conn_guard = db_lock_clone.blocking_lock();
+                let mut conn_guard = db_lock_clone.lock().unwrap();
                 if let Some(conn) = conn_guard.as_mut() {
                     if let Ok(mut stmt) = conn.prepare("SELECT catalog_id, common_name, h, k, t_peri, q, e, w, node, incl FROM comets") {
                         let comet_iter = stmt.query_map([], |row| {
@@ -598,7 +613,7 @@ impl CedarSkyTrait for CypressCatalog {
                 ));
             }
 
-            let mut conn_guard = db_lock_clone.blocking_lock();
+            let mut conn_guard = db_lock_clone.lock().unwrap();
             if let Some(conn) = conn_guard.as_mut() {
                 if let Ok(tx) = conn.transaction() {
                     let _ = tx.execute("DELETE FROM catalog WHERE catalog_label IN ('Planet', 'Asteroid', 'Comet')", []);
@@ -646,10 +661,57 @@ impl CedarSkyTrait for CypressCatalog {
     ) -> Result<(Vec<SelectedCatalogEntry>, usize), CanonicalError> {
         self.open().await?;
 
+        if let Ok(mut cache_lock) = self.query_cache.lock() {
+            if let Some(cache) = cache_lock.iter().rev().find(|cache| {
+                cache.min_elevation == min_elevation
+                    && cache.faintest_magnitude == faintest_magnitude
+                    && cache.match_catalog_label == match_catalog_label
+                    && cache.catalog_label == catalog_label
+                    && cache.match_object_type_label == match_object_type_label
+                    && cache.object_type_label == object_type_label
+                    && cache.text_search == text_search
+                    && cache.ordering == ordering
+                    && cache.limit_result == limit_result
+            }) {
+                let max_dist_match = match (cache.max_distance, max_distance) {
+                    (Some(d1), Some(d2)) => (d1 - d2).abs() < 0.5,
+                    (None, None) => true,
+                    _ => false,
+                };
+                let decrowd_dist_match = match (cache.decrowd_distance, _decrowd_distance) {
+                    // EXACT MATCH REQUIRED FOR NEGATIVE VALUES: The UI smuggles sort enum commands
+                    // (-1.0 for Name, -2.0 for Catalog ID) through decrowd_distance. We must strictly match
+                    // these so we don't accidentally return a Name-sorted cache for a Catalog-sorted query.
+                    (Some(d1), Some(d2)) if d1 < 0.0 || d2 < 0.0 => d1 == d2,
+                    (Some(d1), Some(d2)) => (d1 - d2).abs() < 100.0,
+                    (None, None) => true,
+                    _ => false,
+                };
+                let is_sky_match = match (&cache.sky_location, &sky_location) {
+                    (Some(c1), Some(c2)) => {
+                        let mut d_ra_raw = (c1.ra - c2.ra).abs();
+                        if d_ra_raw > 180.0 {
+                            d_ra_raw = 360.0 - d_ra_raw;
+                        }
+                        let d_ra = d_ra_raw * c1.dec.to_radians().cos();
+                        let d_dec = c1.dec - c2.dec;
+                        let dist_sq = d_ra * d_ra + d_dec * d_dec;
+                        dist_sq < (5.0 / 60.0) * (5.0 / 60.0) // 5 arcminutes threshold
+                    }
+                    (None, None) => true,
+                    _ => false,
+                };
+
+                if max_dist_match && decrowd_dist_match && is_sky_match {
+                    return Ok(cache.result.clone());
+                }
+            }
+        }
+
         let mut selection = String::from("1=1");
         let mut args: Vec<rusqlite::types::Value> = Vec::new();
 
-        if let Some(q) = text_search {
+        if let Some(ref q) = text_search {
             let q_lower = q.trim().to_lowercase();
             let no_space_q = q_lower.replace(" ", "");
 
@@ -756,24 +818,49 @@ impl CedarSkyTrait for CypressCatalog {
 
         if let Some(dist) = max_distance {
             if let Some(target) = sky_location.as_ref() {
-                let dist_rad = dist.to_radians();
-                let cos_dist = dist_rad.cos();
-                let target_ra_rad = target.ra.to_radians();
-                let target_dec_rad = target.dec.to_radians();
-                let sin_dec = target_dec_rad.sin();
-                let cos_dec = target_dec_rad.cos();
+                let target_ra = target.ra;
+                let target_dec = target.dec;
+                let cos_dec = target_dec.to_radians().cos();
+                let dist_sq = dist * dist;
+
+                let ra_dist = if cos_dec.abs() > 0.001 {
+                    dist / cos_dec.abs()
+                } else {
+                    360.0
+                };
+                let ra_min = target_ra - ra_dist;
+                let ra_max = target_ra + ra_dist;
+                let dec_min = target_dec - dist;
+                let dec_max = target_dec + dist;
+
+                let bbox_condition = if ra_min < 0.0 {
+                    format!(
+                        "((ra >= {} OR ra <= {}) AND dec >= {} AND dec <= {})",
+                        ra_min + 360.0,
+                        ra_max,
+                        dec_min,
+                        dec_max
+                    )
+                } else if ra_max >= 360.0 {
+                    format!(
+                        "((ra >= {} OR ra <= {}) AND dec >= {} AND dec <= {})",
+                        ra_min,
+                        ra_max - 360.0,
+                        dec_min,
+                        dec_max
+                    )
+                } else {
+                    format!(
+                        "(ra >= {} AND ra <= {} AND dec >= {} AND dec <= {})",
+                        ra_min, ra_max, dec_min, dec_max
+                    )
+                };
 
                 let dist_condition = format!(
-                    "(SIN(dec * {}) * {} + COS(dec * {}) * {} * COS((ra * {}) - {})) >= {}",
-                    std::f64::consts::PI / 180.0,
-                    sin_dec,
-                    std::f64::consts::PI / 180.0,
-                    cos_dec,
-                    std::f64::consts::PI / 180.0,
-                    target_ra_rad,
-                    cos_dist
+                    "(((ra - {}) * {}) * ((ra - {}) * {}) + (dec - {}) * (dec - {})) <= {}",
+                    target_ra, cos_dec, target_ra, cos_dec, target_dec, target_dec, dist_sq
                 );
-                selection.push_str(&format!(" AND {}", dist_condition));
+                selection.push_str(&format!(" AND {} AND {}", bbox_condition, dist_condition));
             }
         }
 
@@ -874,18 +961,12 @@ impl CedarSkyTrait for CypressCatalog {
                 }
                 Some(Ordering::SkyLocation) => {
                     if let Some(target) = sky_location.as_ref() {
-                        let target_ra_rad = target.ra.to_radians();
-                        let target_dec_rad = target.dec.to_radians();
-                        let sin_dec = target_dec_rad.sin();
-                        let cos_dec = target_dec_rad.cos();
+                        let target_ra = target.ra;
+                        let target_dec = target.dec;
+                        let cos_dec = target_dec.to_radians().cos();
                         format!(
-                            "ORDER BY (SIN(dec * {}) * {} + COS(dec * {}) * {} * COS((ra * {}) - {})) DESC NULLS LAST",
-                            std::f64::consts::PI / 180.0,
-                            sin_dec,
-                            std::f64::consts::PI / 180.0,
-                            cos_dec,
-                            std::f64::consts::PI / 180.0,
-                            target_ra_rad
+                            "ORDER BY (((ra - {}) * {}) * ((ra - {}) * {}) + (dec - {}) * (dec - {})) ASC NULLS LAST",
+                            target_ra, cos_dec, target_ra, cos_dec, target_dec, target_dec
                         )
                     } else {
                         format!("ORDER BY c.magnitude ASC NULLS LAST, {} ASC", priority_case)
@@ -901,100 +982,115 @@ impl CedarSkyTrait for CypressCatalog {
             selection, order_clause, limit
         );
 
-        let conn_guard = self.db.lock().await;
-        let conn = conn_guard.as_ref().unwrap();
-        let mut stmt = conn.prepare(&query).map_err(|e| {
-            warn!("Query prepare error: {}", e);
-            canonical_error::unknown_error("prepare failed")
-        })?;
+        let db_clone = self.db.clone();
 
-        let rows = stmt
-            .query_map(rusqlite::params_from_iter(args.iter()), |row| {
-                let id: String = row.get(0)?;
-                let ra: f64 = row.get(1)?;
-                let dec: f64 = row.get(2)?;
-                let magnitude: f64 = row.get(3).unwrap_or(99.0);
-                let catalog_label: String = row.get(4).unwrap_or_default();
-                let object_type: String = row.get(5).unwrap_or_default();
-                let broad_category: String = row.get(6).unwrap_or_default();
-                let constellation: String = row.get(7).unwrap_or_default();
-                let common_name: String = row.get(8).unwrap_or_default();
-                let angular_size: Option<String> = row.get(9).unwrap_or(None);
+        let fetched_results = tokio::task::spawn_blocking(
+            move || -> Result<Vec<SelectedCatalogEntry>, CanonicalError> {
+                let conn_guard = db_clone.lock().unwrap();
+                let conn = conn_guard.as_ref().unwrap();
+                let mut stmt = conn.prepare(&query).map_err(|e| {
+                    warn!("Query prepare error: {}", e);
+                    canonical_error::unknown_error("prepare failed")
+                })?;
 
-                let mut out_label = catalog_label.clone();
-                let out_entry = id.clone();
-                let mut out_common = if common_name.is_empty() {
-                    None
-                } else {
-                    Some(common_name.clone())
-                };
+                let rows = stmt
+                    .query_map(rusqlite::params_from_iter(args.iter()), |row| {
+                        let id: String = row.get(0)?;
+                        let ra: f64 = row.get(1)?;
+                        let dec: f64 = row.get(2)?;
+                        let magnitude: f64 = row.get(3).unwrap_or(99.0);
+                        let catalog_label: String = row.get(4).unwrap_or_default();
+                        let object_type: String = row.get(5).unwrap_or_default();
+                        let broad_category: String = row.get(6).unwrap_or_default();
+                        let constellation: String = row.get(7).unwrap_or_default();
+                        let common_name: String = row.get(8).unwrap_or_default();
+                        let angular_size: Option<String> = row.get(9).unwrap_or(None);
 
-                let is_star_or_planet = out_label == "Str"
-                    || out_label == "Planet"
-                    || out_label == "Asteroid"
-                    || out_label == "Comet";
+                        let mut out_label = catalog_label.clone();
+                        let out_entry = id.clone();
+                        let mut out_common = if common_name.is_empty() {
+                            None
+                        } else {
+                            Some(common_name.clone())
+                        };
 
-                if let Some(cname) = out_common.take() {
-                    let designation = if is_star_or_planet {
-                        out_entry.clone()
-                    } else {
-                        format!("{}{}", out_label, out_entry)
-                    };
+                        let is_star_or_planet = out_label == "Str"
+                            || out_label == "Planet"
+                            || out_label == "Asteroid"
+                            || out_label == "Comet";
 
-                    let cname_norm = cname.replace(" ", "").to_lowercase();
-                    let desig_norm = designation.replace(" ", "").to_lowercase();
+                        if let Some(cname) = out_common.take() {
+                            let designation = if is_star_or_planet {
+                                out_entry.clone()
+                            } else {
+                                format!("{}{}", out_label, out_entry)
+                            };
 
-                    // If the common name is just a spaced variant of the catalog designation (e.g. 'NGC 5340' vs 'NGC5340'), suppress the common name to prevent duplicate rendering in the frontend.
-                    if cname_norm != desig_norm {
-                        out_common = Some(cname);
+                            let cname_norm = cname.replace(" ", "").to_lowercase();
+                            let desig_norm = designation.replace(" ", "").to_lowercase();
+
+                            if cname_norm != desig_norm {
+                                out_common = Some(cname);
+                            }
+                        }
+
+                        if is_star_or_planet {
+                            out_label = "".to_string();
+                        }
+
+                        let entry = CatalogEntry {
+                            catalog_label: out_label,
+                            catalog_entry: out_entry,
+                            coord: Some(CelestialCoord {
+                                ra,
+                                dec,
+                                epoch: Some(2000.0),
+                            }),
+                            constellation: if constellation.is_empty() {
+                                None
+                            } else {
+                                Some(cedar_elements::cedar_sky::Constellation {
+                                    label: constellation,
+                                    name: String::new(),
+                                })
+                            },
+                            object_type: Some(cedar_elements::cedar_sky::ObjectType {
+                                label: object_type,
+                                broad_category,
+                            }),
+                            magnitude: Some(magnitude),
+                            angular_size,
+                            common_name: out_common,
+                            notes: None,
+                        };
+
+                        Ok(SelectedCatalogEntry {
+                            entry: Some(entry),
+                            deduped_entries: Vec::new(),
+                            decrowded_entries: Vec::new(),
+                            altitude: None,
+                            azimuth: None,
+                        })
+                    })
+                    .map_err(|e| {
+                        warn!("Query exec error: {}", e);
+                        canonical_error::unknown_error("query failed")
+                    })?;
+
+                let mut results = Vec::new();
+                for row in rows {
+                    if let Ok(sel_entry) = row {
+                        results.push(sel_entry);
                     }
                 }
-
-                if is_star_or_planet {
-                    out_label = "".to_string();
-                }
-
-                let entry = CatalogEntry {
-                    catalog_label: out_label,
-                    catalog_entry: out_entry,
-                    coord: Some(CelestialCoord {
-                        ra,
-                        dec,
-                        epoch: Some(2000.0),
-                    }),
-                    constellation: if constellation.is_empty() {
-                        None
-                    } else {
-                        Some(cedar_elements::cedar_sky::Constellation {
-                            label: constellation,
-                            name: String::new(),
-                        })
-                    },
-                    object_type: Some(cedar_elements::cedar_sky::ObjectType {
-                        label: object_type,
-                        broad_category,
-                    }),
-                    magnitude: Some(magnitude),
-                    angular_size,
-                    common_name: out_common,
-                    notes: None,
-                };
-
-                let sel_entry = SelectedCatalogEntry {
-                    entry: Some(entry),
-                    deduped_entries: Vec::new(),
-                    decrowded_entries: Vec::new(),
-                    altitude: None,
-                    azimuth: None,
-                };
-                Ok(sel_entry)
-            })
-            .map_err(|e| {
-                warn!("Query exec error: {}", e);
-                canonical_error::unknown_error("query failed")
-            })?;
+                Ok(results)
+            },
+        )
+        .await
+        .unwrap()?;
 
         let mut results: Vec<SelectedCatalogEntry> = Vec::new();
+
         let do_decrowd = _decrowd_distance.is_some() && _decrowd_distance.unwrap() > 0.0;
         let decrowd_distance_rad = if do_decrowd {
             _decrowd_distance.unwrap() / 3600.0 * (std::f64::consts::PI / 180.0)
@@ -1002,54 +1098,105 @@ impl CedarSkyTrait for CypressCatalog {
             0.0
         };
 
-        for row in rows {
-            if let Ok(sel_entry) = row {
-                if do_decrowd {
-                    let entry_coord = sel_entry.entry.as_ref().unwrap().coord.as_ref().unwrap();
-                    let ra1 = entry_coord.ra.to_radians();
-                    let dec1 = entry_coord.dec.to_radians();
+        for sel_entry in fetched_results {
+            if do_decrowd {
+                let entry_coord = sel_entry.entry.as_ref().unwrap().coord.as_ref().unwrap();
+                let ra1 = entry_coord.ra.to_radians();
+                let dec1 = entry_coord.dec.to_radians();
 
-                    let mut crowded_into = None;
-                    for (i, final_entry) in results.iter_mut().enumerate() {
-                        let f_coord = final_entry.entry.as_ref().unwrap().coord.as_ref().unwrap();
-                        let ra2 = f_coord.ra.to_radians();
-                        let dec2 = f_coord.dec.to_radians();
+                let mut crowded_into = None;
+                for (i, final_entry) in results.iter_mut().enumerate() {
+                    let f_coord = final_entry.entry.as_ref().unwrap().coord.as_ref().unwrap();
+                    let ra2 = f_coord.ra.to_radians();
+                    let dec2 = f_coord.dec.to_radians();
 
-                        let cos_dist = (dec1.sin() * dec2.sin()
-                            + dec1.cos() * dec2.cos() * (ra1 - ra2).cos())
-                        .clamp(-1.0, 1.0);
-                        let dist = cos_dist.acos();
-
-                        if dist < decrowd_distance_rad {
-                            crowded_into = Some(i);
-                            break;
-                        }
+                    let d_dec = dec1 - dec2;
+                    let mut d_ra = (ra1 - ra2).abs();
+                    if d_ra > std::f64::consts::PI {
+                        d_ra = 2.0 * std::f64::consts::PI - d_ra;
                     }
+                    let avg_dec = (dec1 + dec2) * 0.5;
+                    let d_ra_scaled = d_ra * avg_dec.cos();
+                    let dist_sq = d_dec * d_dec + d_ra_scaled * d_ra_scaled;
 
-                    if let Some(idx) = crowded_into {
-                        results[idx]
-                            .decrowded_entries
-                            .push(sel_entry.entry.unwrap());
-                    } else {
-                        results.push(sel_entry);
+                    if dist_sq < decrowd_distance_rad * decrowd_distance_rad {
+                        crowded_into = Some(i);
+                        break;
                     }
+                }
+
+                if let Some(idx) = crowded_into {
+                    results[idx]
+                        .decrowded_entries
+                        .push(sel_entry.entry.unwrap());
                 } else {
                     results.push(sel_entry);
                 }
+            } else {
+                results.push(sel_entry);
             }
         }
 
         let skipped = 0;
 
+        if let Ok(mut cache_lock) = self.query_cache.lock() {
+            // Remove previous cache entries for this exact query pattern to avoid unbound growth of same query
+            cache_lock.retain(|cache| {
+                let max_dist_match = match (cache.max_distance, max_distance) {
+                    (Some(d1), Some(d2)) => (d1 - d2).abs() < 0.5,
+                    (None, None) => true,
+                    _ => false,
+                };
+                let decrowd_dist_match = match (cache.decrowd_distance, _decrowd_distance) {
+                    (Some(d1), Some(d2)) if d1 < 0.0 || d2 < 0.0 => d1 == d2,
+                    (Some(d1), Some(d2)) => (d1 - d2).abs() < 100.0,
+                    (None, None) => true,
+                    _ => false,
+                };
+                !(max_dist_match
+                    && decrowd_dist_match
+                    && cache.min_elevation == min_elevation
+                    && cache.faintest_magnitude == faintest_magnitude
+                    && cache.match_catalog_label == match_catalog_label
+                    && cache.catalog_label == catalog_label
+                    && cache.match_object_type_label == match_object_type_label
+                    && cache.object_type_label == object_type_label
+                    && cache.text_search == text_search
+                    && cache.ordering == ordering
+                    && cache.limit_result == limit_result)
+            });
+
+            cache_lock.push(CatalogQueryCache {
+                sky_location,
+                max_distance,
+                min_elevation,
+                faintest_magnitude,
+                match_catalog_label,
+                catalog_label: catalog_label.to_vec(),
+                match_object_type_label,
+                object_type_label: object_type_label.to_vec(),
+                text_search,
+                ordering,
+                decrowd_distance: _decrowd_distance,
+                limit_result,
+                result: (results.clone(), skipped),
+                timestamp: std::time::Instant::now(),
+            });
+
+            if cache_lock.len() > 32 {
+                cache_lock.remove(0);
+            }
+        }
+
+        debug!("query_catalog_entries took {:?}", start_time.elapsed());
         Ok((results, skipped))
     }
-
     async fn get_catalog_entry(
         &mut self,
         entry_key: CatalogEntryKey,
         _timestamp: SystemTime,
     ) -> Result<CatalogEntry, CanonicalError> {
-        let conn_guard = self.db.lock().await;
+        let conn_guard = self.db.lock().unwrap();
         let conn = conn_guard.as_ref().unwrap();
         let mut stmt = conn.prepare(
             "SELECT catalog_entry, ra, dec, magnitude, catalog_label, object_type, broad_category, constellation, common_name, angular_size FROM catalog WHERE (catalog_entry = ? AND catalog_label = ?) OR common_name = ?"
