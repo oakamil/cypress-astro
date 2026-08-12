@@ -5,6 +5,8 @@ A collection of  packages that integrate with the Cedar™ plate-solving system
 
 This project is licensed under the GNU General Public License v3.0.
 
+Components in this project are available to be licensed under different terms. Please contact the copyright holder (Omair Kamil - okamil.dev@gmail.com) for information.
+
 See `LICENSE.md` file for full details.
 
 ### Third-Party Licenses

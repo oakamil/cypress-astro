@@ -29,7 +29,6 @@ struct CatalogQueryCache {
     decrowd_distance: Option<f64>,
     limit_result: Option<usize>,
     result: (Vec<SelectedCatalogEntry>, usize),
-    timestamp: std::time::Instant,
 }
 pub struct CypressCatalog {
     db_path: String,
@@ -661,7 +660,7 @@ impl CedarSkyTrait for CypressCatalog {
     ) -> Result<(Vec<SelectedCatalogEntry>, usize), CanonicalError> {
         self.open().await?;
 
-        if let Ok(mut cache_lock) = self.query_cache.lock() {
+        if let Ok(cache_lock) = self.query_cache.lock() {
             if let Some(cache) = cache_lock.iter().rev().find(|cache| {
                 cache.min_elevation == min_elevation
                     && cache.faintest_magnitude == faintest_magnitude
@@ -707,6 +706,8 @@ impl CedarSkyTrait for CypressCatalog {
                 }
             }
         }
+
+        let start_time = std::time::Instant::now();
 
         let mut selection = String::from("1=1");
         let mut args: Vec<rusqlite::types::Value> = Vec::new();
@@ -1180,7 +1181,6 @@ impl CedarSkyTrait for CypressCatalog {
                 decrowd_distance: _decrowd_distance,
                 limit_result,
                 result: (results.clone(), skipped),
-                timestamp: std::time::Instant::now(),
             });
 
             if cache_lock.len() > 32 {
