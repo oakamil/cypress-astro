@@ -353,6 +353,33 @@ impl CypressCatalog {
 
 #[async_trait]
 impl CedarSkyTrait for CypressCatalog {
+    async fn constellation_at(&self, coord: &CelestialCoord) -> Option<Constellation> {
+        // Precess from coord.epoch (or 2000.0) to B1875.0 (1875.0)
+        let epoch_from = coord.epoch.unwrap_or(2000.0);
+        let (ra_rad, dec_rad) = cedar_elements::astro_util::precess(
+            coord.ra.to_radians(),
+            coord.dec.to_radians(),
+            epoch_from,
+            1875.0,
+        );
+
+        let mut ra_hours = ra_rad.to_degrees() / 15.0;
+        if ra_hours < 0.0 {
+            ra_hours += 24.0;
+        }
+        let dec_degrees = dec_rad.to_degrees();
+
+        let map = starfield::constellationlib::ConstellationMap::new();
+        let abbr = map.from_ra_dec_b1875(ra_hours, dec_degrees);
+        let full_name =
+            starfield::constellationlib::ConstellationMap::full_name(abbr).unwrap_or(abbr);
+
+        Some(Constellation {
+            label: abbr.to_string(),
+            name: full_name.to_string(),
+        })
+    }
+
     async fn initialize_solar_system(&mut self, timestamp: SystemTime) {
         let bsp_path = if let Some(p) = &self.bsp_path {
             p.clone()
@@ -1047,6 +1074,7 @@ impl CedarSkyTrait for CypressCatalog {
                                 dec,
                                 epoch: Some(2000.0),
                             }),
+                            rise_set_culmination: None,
                             constellation: if constellation.is_empty() {
                                 None
                             } else {
@@ -1195,6 +1223,7 @@ impl CedarSkyTrait for CypressCatalog {
         &mut self,
         entry_key: CatalogEntryKey,
         _timestamp: SystemTime,
+        _location_info: Option<LocationInfo>,
     ) -> Result<CatalogEntry, CanonicalError> {
         let conn_guard = self.db.lock().unwrap();
         let conn = conn_guard.as_ref().unwrap();
@@ -1258,6 +1287,7 @@ impl CedarSkyTrait for CypressCatalog {
                             dec,
                             epoch: Some(2000.0),
                         }),
+                        rise_set_culmination: None,
                         constellation: if constellation.is_empty() {
                             None
                         } else {

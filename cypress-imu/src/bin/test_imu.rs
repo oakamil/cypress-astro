@@ -22,11 +22,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Initializing gyro-only BNO085 over I2C...");
 
     let device = Bno085Device::new(10, 0x4B, use_calibrated)?;
-    let imu_storage: Option<std::sync::Arc<dyn olive_imu::PersistentStorage>> =
-        Some(std::sync::Arc::new(olive_imu::FileStorage::new(std::path::PathBuf::from("."))));
+    let imu_storage: Option<std::sync::Arc<dyn olive_imu::PersistentStorage>> = Some(
+        std::sync::Arc::new(olive_imu::FileStorage::new(std::path::PathBuf::from("."))),
+    );
 
     let engine = Imu::start(device, imu_storage)?;
-    let imu = CedarImuWrapper::new(Arc::new(engine));
+    let imu = CedarImuWrapper::new(Arc::new(engine), "BNO085".to_string());
 
     println!("Waiting for sensor calibration to complete (5 seconds of stability)...");
 

@@ -15,11 +15,12 @@ use olive_imu::{Imu, MotionState, MountCoordinates};
 
 pub struct CedarImuWrapper {
     pub engine: Arc<Imu>,
+    pub model_name: String,
 }
 
 impl CedarImuWrapper {
-    pub fn new(engine: Arc<Imu>) -> Self {
-        Self { engine }
+    pub fn new(engine: Arc<Imu>, model_name: String) -> Self {
+        Self { engine, model_name }
     }
 }
 
@@ -144,7 +145,7 @@ impl ImuTrait for CedarImuWrapper {
     }
 
     fn get_model(&self) -> String {
-        "Generic/Olive-IMU".to_string()
+        self.model_name.clone()
     }
 
     fn start(&self) {}

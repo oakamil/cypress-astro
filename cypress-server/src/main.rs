@@ -414,7 +414,8 @@ fn main() {
                         .ok()
                         .and_then(|device| {
                             Imu::start(device, imu_storage.clone()).ok().map(|engine| {
-                                let wrapper = CedarImuWrapper::new(Arc::new(engine));
+                                let wrapper =
+                                    CedarImuWrapper::new(Arc::new(engine), "BNO085".to_string());
 
                                 Arc::new(Mutex::new(wrapper)) as Arc<Mutex<dyn ImuTrait + Send>>
                             })
@@ -426,7 +427,8 @@ fn main() {
                         .ok()
                         .and_then(|device| {
                             Imu::start(device, imu_storage.clone()).ok().map(|engine| {
-                                let wrapper = CedarImuWrapper::new(Arc::new(engine));
+                                let wrapper =
+                                    CedarImuWrapper::new(Arc::new(engine), "BNO085".to_string());
 
                                 Arc::new(Mutex::new(wrapper)) as Arc<Mutex<dyn ImuTrait + Send>>
                             })
@@ -438,7 +440,8 @@ fn main() {
                         .ok()
                         .and_then(|device| {
                             Imu::start(device, imu_storage.clone()).ok().map(|engine| {
-                                let wrapper = CedarImuWrapper::new(Arc::new(engine));
+                                let wrapper =
+                                    CedarImuWrapper::new(Arc::new(engine), "BNO055".to_string());
 
                                 Arc::new(Mutex::new(wrapper)) as Arc<Mutex<dyn ImuTrait + Send>>
                             })
@@ -450,7 +453,8 @@ fn main() {
                         .ok()
                         .and_then(|device| {
                             Imu::start(device, imu_storage.clone()).ok().map(|engine| {
-                                let wrapper = CedarImuWrapper::new(Arc::new(engine));
+                                let wrapper =
+                                    CedarImuWrapper::new(Arc::new(engine), "BNO055".to_string());
 
                                 Arc::new(Mutex::new(wrapper)) as Arc<Mutex<dyn ImuTrait + Send>>
                             })
@@ -462,7 +466,8 @@ fn main() {
                         .ok()
                         .and_then(|device| {
                             Imu::start(device, imu_storage.clone()).ok().map(|engine| {
-                                let wrapper = CedarImuWrapper::new(Arc::new(engine));
+                                let wrapper =
+                                    CedarImuWrapper::new(Arc::new(engine), "BMI160".to_string());
 
                                 Arc::new(Mutex::new(wrapper)) as Arc<Mutex<dyn ImuTrait + Send>>
                             })
@@ -474,7 +479,8 @@ fn main() {
                         .ok()
                         .and_then(|device| {
                             Imu::start(device, imu_storage.clone()).ok().map(|engine| {
-                                let wrapper = CedarImuWrapper::new(Arc::new(engine));
+                                let wrapper =
+                                    CedarImuWrapper::new(Arc::new(engine), "BMI160".to_string());
 
                                 Arc::new(Mutex::new(wrapper)) as Arc<Mutex<dyn ImuTrait + Send>>
                             })
@@ -486,7 +492,10 @@ fn main() {
                         .ok()
                         .and_then(|device| {
                             Imu::start(device, imu_storage.clone()).ok().map(|engine| {
-                                let wrapper = CedarImuWrapper::new(Arc::new(engine));
+                                let wrapper = CedarImuWrapper::new(
+                                    Arc::new(engine),
+                                    "MPU Series".to_string(),
+                                );
 
                                 Arc::new(Mutex::new(wrapper)) as Arc<Mutex<dyn ImuTrait + Send>>
                             })
@@ -498,7 +507,10 @@ fn main() {
                         .ok()
                         .and_then(|device| {
                             Imu::start(device, imu_storage.clone()).ok().map(|engine| {
-                                let wrapper = CedarImuWrapper::new(Arc::new(engine));
+                                let wrapper = CedarImuWrapper::new(
+                                    Arc::new(engine),
+                                    "MPU Series".to_string(),
+                                );
 
                                 Arc::new(Mutex::new(wrapper)) as Arc<Mutex<dyn ImuTrait + Send>>
                             })
