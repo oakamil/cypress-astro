@@ -410,7 +410,33 @@ fn main() {
 
             let imu: Option<Arc<Mutex<dyn ImuTrait + Send>>> = None
                 .or_else(|| {
-                    Bno085Device::new(10, 0x4B, true)
+                    Bno085Device::new(10, 0x4B, true, Some(3))
+                        .ok()
+                        .and_then(|device| {
+                            Imu::start(device, imu_storage.clone()).ok().map(|engine| {
+                                let wrapper =
+                                    CedarImuWrapper::new(Arc::new(engine), "BNO085".to_string());
+
+                                Arc::new(Mutex::new(wrapper)) as Arc<Mutex<dyn ImuTrait + Send>>
+                            })
+                        })
+                        .and_then(|r| try_init("BNO085 (0x4B on bus 3)", Some(r)))
+                })
+                .or_else(|| {
+                    Bno085Device::new(10, 0x4A, true, Some(3))
+                        .ok()
+                        .and_then(|device| {
+                            Imu::start(device, imu_storage.clone()).ok().map(|engine| {
+                                let wrapper =
+                                    CedarImuWrapper::new(Arc::new(engine), "BNO085".to_string());
+
+                                Arc::new(Mutex::new(wrapper)) as Arc<Mutex<dyn ImuTrait + Send>>
+                            })
+                        })
+                        .and_then(|r| try_init("BNO085 (0x4A on bus 3)", Some(r)))
+                })
+                .or_else(|| {
+                    Bno085Device::new(10, 0x4B, true, None)
                         .ok()
                         .and_then(|device| {
                             Imu::start(device, imu_storage.clone()).ok().map(|engine| {
@@ -423,7 +449,7 @@ fn main() {
                         .and_then(|r| try_init("BNO085 (0x4B)", Some(r)))
                 })
                 .or_else(|| {
-                    Bno085Device::new(10, 0x4A, true)
+                    Bno085Device::new(10, 0x4A, true, None)
                         .ok()
                         .and_then(|device| {
                             Imu::start(device, imu_storage.clone()).ok().map(|engine| {
