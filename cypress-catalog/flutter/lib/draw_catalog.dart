@@ -20,7 +20,8 @@ void drawCatalogEntries(
     List<cedar_rpc.FovCatalogEntry> entries,
     bool drawLabels,
     int binFactor,
-    cedar_rpc.FovCatalogEntry? target) {
+    cedar_rpc.FovCatalogEntry? target,
+    [Iterable<String>? preferredCatalogs]) {
   final paintColor = color;
 
   for (final fovEntry in entries) {

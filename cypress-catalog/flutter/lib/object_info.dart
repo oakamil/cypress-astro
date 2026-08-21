@@ -17,7 +17,10 @@ import 'package:cedar_flutter/settings.dart';
 
 /// Wired up in client_main.dart
 void showObjectInfoDialog(MyHomePageState state, BuildContext context,
-    cedar_sky_rpc.SelectedCatalogEntry selEntry) {
+    cedar_sky_rpc.SelectedCatalogEntry selEntry,
+    {bool dedupedEntriesMayBeIncomplete = false,
+    Iterable<String>? preferredCatalogs,
+    String? searchText}) {
   showDialog(
     context: context,
     builder: (context) => ObjectInfoDialog(state: state, selEntry: selEntry),
